@@ -24,7 +24,7 @@ import {
   PieChart,
   Pie,
 } from "recharts";
-
+import { AppSwitcher } from './components/AppSwitcher';
 import { Transaction, Investment, TransactionType } from "../types";
 import DashboardCard from "./components/DashboardCard";
 import { supabase } from "./services/supabase";
@@ -50,6 +50,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
+      console.log('sessão:', data.session);
+      console.log('erro:', error);
       setSession(data.session);
       setAuthLoading(false);
     });
@@ -310,10 +312,10 @@ const App: React.FC = () => {
     val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
   // ---- Só aqui entram os returns condicionais ----
-  if (authLoading) return <div className="p-8">Carregando...</div>;
-  if (!session) {
-  window.location.href = "/";
-  return null;
+if (!session && !authLoading) {
+  if (import.meta.env.PROD) {
+    window.location.href = '/';
+  }
 }
 
   return (
@@ -347,17 +349,7 @@ const App: React.FC = () => {
           >
             <Plus size={18} /> Gasto
           </button>
-
-          <button
-            onClick={async () => {
-              await supabase.auth.signOut();
-              window.location.href = "/";
-            }}
-            className="bg-[#00000]/10 border border-[#FFFFFF]/30 shadow-[0_0_12px_rgba(255,255,255,0.18)] hover:bg-[#FFffff]/85 text-white hover:text-black px-3 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1 md:gap-2 rounded-xl text-sm font-bold"
-          >
-            Sair
-          </button>
-
+          <AppSwitcher currentApp="finance" userEmail={session?.user?.email} />
         </div>
         </div>
       </header>

@@ -22,3 +22,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# cria/abre o .gitignore e adiciona essa linha
+git ls-files | findstr .env
