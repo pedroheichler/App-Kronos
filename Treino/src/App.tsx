@@ -25,11 +25,44 @@ import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, DayPlan, Exercise } from './types';
 import { INITIAL_SQUAD } from './constants/mockData';
+import { Onboarding } from './components/Onboarding';
 
 export default function App() {
+
+  // ── Todos os hooks primeiro ──
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
- 
+  const [squad, setSquad] = useState<Squad>(INITIAL_SQUAD);
+  const [currentView, setCurrentView] = useState<ViewType>('dashboard');
+  const [selectedDayId, setSelectedDayId] = useState<string>(squad.weeklyPlan[0].id);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
+  const [squadId, setSquadId] = useState<string | null>(null);
+  const [checkingSquad, setCheckingSquad] = useState(true);
+  function LoginTemp() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const login = async () => {
+    await supabase.auth.signInWithPassword({ email, password });
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
+      <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
+        <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
+          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
+          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+        <button onClick={login}
+          style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+          Entrar
+        </button>
+      </div>
+    </div>
+  );
+}
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -45,8 +78,29 @@ export default function App() {
       listener.subscription.unsubscribe();
     };
   }, []);
+  
+    useEffect(() => {
+  console.log('session:', session);
+  
+  if (!session) {
+    setCheckingSquad(false);
+    return;
+  }
 
-  // ── Returns condicionais (depois de todos os hooks) ──
+  supabase
+    .from('squad_members')
+    .select('squad_id')
+    .eq('user_id', session.user.id)
+    .maybeSingle() // ← troca .single() por .maybeSingle()
+    .then(({ data, error }) => {
+      console.log('squad data:', data);
+      console.log('squad error:', error);
+      setSquadId(data?.squad_id || null);
+      setCheckingSquad(false);
+    });
+}, [session]);
+
+  // ── Returns condicionais (só depois de todos os hooks) ──
   if (authLoading) return <div style={{ color: '#fff', padding: 40 }}>Carregando...</div>;
 
   if (!session && !authLoading) {
@@ -55,14 +109,14 @@ export default function App() {
     }
   }
 
+  if (!session) return <LoginTemp />;
 
-  // ← AQUI CONTINUA O CÓDIGO ORIGINAL (squad, currentView, etc)
-
-  const [squad, setSquad] = useState<Squad>(INITIAL_SQUAD);
-  const [currentView, setCurrentView] = useState<ViewType>('dashboard');
-  const [selectedDayId, setSelectedDayId] = useState<string>(squad.weeklyPlan[0].id);
-  const [isEditorOpen, setIsEditorOpen] = useState(false);
-  const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
+if (!squadId) return (
+  <Onboarding
+    userId={session.user.id}
+    onComplete={() => setCheckingSquad(true)}
+  />
+);
 
   const openEditor = (dayId: string, exercise: Exercise) => {
     setEditingExercise({ dayId, exercise });
