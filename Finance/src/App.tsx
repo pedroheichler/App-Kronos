@@ -110,9 +110,23 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (session) fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user?.id]);
+  if (!session) {
+    setCheckingSquad(false);
+    return;
+  }
+
+  supabase
+    .from('squad_members')
+    .select('squad_id')
+    .eq('user_id', session.user.id)
+    .limit(1)
+    .then(({ data, error }) => {
+      console.log('squad data:', data);
+      console.log('squad error:', error);
+      setSquadId(data?.[0]?.squad_id || null);
+      setCheckingSquad(false);
+    });
+}, [session?.user?.id]); // ← só roda quando o ID muda
 
   // ---- Financial Calculations ----
   const summary = useMemo<DashboardSummary>(() => {

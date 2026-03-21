@@ -84,7 +84,7 @@ function AppSelector({ session }: { session: Session }) {
 
   const apps = [
     { nome: "Finance", descricao: "Controle suas finanças", url: "/finance/", emoji: "💰", cor: "#e7ff5e" },
-    { nome: "Treino", descricao: "Gerencie seus treinos", url: "/squadfit/", emoji: "🏋️", cor: "#a78bfa" },
+    { nome: "Treino", descricao: "Gerencie seus treinos", url: "/treino/", emoji: "🏋️", cor: "#a78bfa" },
   ];
 
   return (
