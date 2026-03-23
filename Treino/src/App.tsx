@@ -1,5 +1,11 @@
 import { useState, useEffect, ReactNode } from 'react';
 import { supabase } from './services/supabase';
+import {
+  addExercise as addExerciseToDB,
+  saveExercise as saveExerciseToDB,
+  deleteExercise as deleteExerciseFromDB,
+  fetchExercisesByDay,
+} from './services/exercises';
 import { 
   LayoutDashboard, 
   Calendar, 
@@ -7,8 +13,7 @@ import {
   TrendingUp, 
   Settings, 
   Plus, 
-  MoreVertical, 
-  CheckCircle2, 
+  CheckCircle2,
   Circle, 
   Clock, 
   ChevronRight,
@@ -17,7 +22,6 @@ import {
   Copy,
   Edit3,
   RotateCcw,
-  Search,
   Dumbbell,
   Info
 } from 'lucide-react';
@@ -26,6 +30,31 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, DayPlan, Exercise } from './types';
 import { INITIAL_SQUAD } from './constants/mockData';
 import { Onboarding } from './components/Onboarding';
+
+ function LoginTemp() {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+
+    const login = async () => {
+      await supabase.auth.signInWithPassword({ email, password });
+    };
+
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
+        <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
+            style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
+            style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          <button onClick={login}
+            style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            Entrar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
 export default function App() {
 
@@ -39,49 +68,22 @@ export default function App() {
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
   const [checkingSquad, setCheckingSquad] = useState(true);
-  function LoginTemp() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-
-  const login = async () => {
-    await supabase.auth.signInWithPassword({ email, password });
-  };
-
-  return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
-      <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
-        <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
-          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
-        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
-          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
-        <button onClick={login}
-          style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
-          Entrar
-        </button>
-      </div>
-    </div>
-  );
-}
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
       setAuthLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setAuthLoading(false);
     });
 
-    return () => {
-      listener.subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
-  
-    useEffect(() => {
-  console.log('session:', session);
-  
+
+  useEffect(() => {
   if (!session) {
     setCheckingSquad(false);
     return;
@@ -91,17 +93,82 @@ export default function App() {
     .from('squad_members')
     .select('squad_id')
     .eq('user_id', session.user.id)
-    .maybeSingle() // ← troca .single() por .maybeSingle()
-    .then(({ data, error }) => {
-      console.log('squad data:', data);
-      console.log('squad error:', error);
-      setSquadId(data?.squad_id || null);
+    .limit(1)
+    .then(({ data }) => {
+      setSquadId(data?.[0]?.squad_id || null);
       setCheckingSquad(false);
     });
-}, [session]);
+}, [session?.user?.id]);
+
+useEffect(() => {
+  if (!squadId) return;
+
+  // Busca dados do squad
+  supabase
+    .from('squads')
+    .select('id, name, icon, invite_code')
+    .eq('id', squadId)
+    .single()
+    .then(({ data: squadData }) => {
+      if (!squadData) return;
+
+      // Busca membros do squad
+      supabase
+        .from('squad_members')
+        .select('user_id, role')
+        .eq('squad_id', squadId)
+        .then(({ data: membersData }) => {
+
+          // Busca dias do squad
+          supabase
+            .from('workout_days')
+            .select('id, name, focus, day_order')
+            .eq('squad_id', squadId)
+            .order('day_order')
+            .then(({ data: daysData }) => {
+              if (!daysData) return;
+
+              setSquad(prev => ({
+                ...prev,
+                id: squadData.id,
+                name: squadData.name,
+                icon: squadData.icon || prev.icon,
+                inviteCode: squadData.invite_code,
+                members: (membersData || []).map((m: any) => ({
+                  id: m.user_id,
+                  name: m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro',
+                  avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
+                  role: m.role,
+                  isOnline: m.user_id === session?.user?.id,
+                })),
+                weeklyPlan: daysData.map((day: any) => ({
+                  id: day.id,
+                  name: day.name,
+                  focus: day.focus || '',
+                  exercises: [],
+                })),
+              }));
+
+              // Busca exercícios de cada dia
+              Promise.all(daysData.map((day: any) => fetchExercisesByDay(day.id)))
+                .then(exercisesPerDay => {
+                  setSquad(prev => ({
+                    ...prev,
+                    weeklyPlan: prev.weeklyPlan.map((day, i) => ({
+                      ...day,
+                      exercises: exercisesPerDay[i],
+                    })),
+                  }));
+                })
+                .catch(console.error);
+            });
+        });
+    });
+}, [squadId]);
+  
 
   // ── Returns condicionais (só depois de todos os hooks) ──
-  if (authLoading) return <div style={{ color: '#fff', padding: 40 }}>Carregando...</div>;
+  if (authLoading) return <div style={{ color: '#fff', padding: 40, background: '#09090b', minHeight: '100vh' }}>Carregando...</div>;
 
   if (!session && !authLoading) {
     if (import.meta.env.PROD) {
@@ -125,10 +192,11 @@ if (!squadId) return (
 
   const saveExercise = (updatedEx: Exercise) => {
     if (!editingExercise) return;
+    saveExerciseToDB(updatedEx).catch(console.error);
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
-        day.id === editingExercise.dayId 
+      weeklyPlan: prev.weeklyPlan.map(day =>
+        day.id === editingExercise.dayId
           ? { ...day, exercises: day.exercises.map(ex => ex.id === updatedEx.id ? updatedEx : ex) }
           : day
       )
@@ -164,16 +232,17 @@ if (!squadId) return (
 
   const addExercise = (dayId: string) => {
     const newEx: Exercise = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       name: 'Novo Exercício',
       sets: 3,
       reps: '12',
       rest: '60s',
       completed: false
     };
+    addExerciseToDB(dayId, newEx).catch(console.error);
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
+      weeklyPlan: prev.weeklyPlan.map(day =>
         day.id === dayId ? { ...day, exercises: [...day.exercises, newEx] } : day
       )
     }));
@@ -181,9 +250,10 @@ if (!squadId) return (
   };
 
   const deleteExercise = (dayId: string, exId: string) => {
+    deleteExerciseFromDB(exId).catch(console.error);
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
+      weeklyPlan: prev.weeklyPlan.map(day =>
         day.id === dayId ? { ...day, exercises: day.exercises.filter(ex => ex.id !== exId) } : day
       )
     }));
@@ -203,7 +273,7 @@ if (!squadId) return (
     if (!day || !day.focus || day.exercises.length === 0) return;
 
     const newTemplate = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       name: day.focus,
       exercises: day.exercises.map(ex => ({ ...ex, completed: false }))
     };
@@ -585,50 +655,58 @@ if (!squadId) return (
           )}
 
           {currentView === 'squad' && (
-            <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
-              <div className="p-8 border-b border-zinc-800 flex items-center justify-between">
-                <div>
-                  <h3 className="text-xl font-bold mb-1">Membros da Equipe</h3>
-                  <p className="text-zinc-500 text-sm">Gerencie quem tem acesso aos treinos do squad.</p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                    <input 
-                      type="text" 
-                      placeholder="Buscar membro..." 
-                      className="bg-zinc-800 border-none rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none w-64"
-                    />
+            <div className="space-y-6">
+
+              {/* Código de convite — só aparece para o admin */}
+              {squad.members.find(m => m.id === session?.user?.id)?.role === 'admin' && (
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
+                  <h3 className="text-lg font-bold mb-1">Código de Convite</h3>
+                  <p className="text-zinc-500 text-sm mb-4">Compartilhe esse código para alguém entrar no seu squad.</p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 bg-zinc-800 rounded-xl px-5 py-3 font-mono text-2xl font-bold tracking-widest text-emerald-400 text-center">
+                      {squad.inviteCode || '...'}
+                    </div>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(squad.inviteCode || '');
+                        alert('Código copiado!');
+                      }}
+                      className="p-3 bg-emerald-500 hover:bg-emerald-600 rounded-xl text-white transition-all"
+                    >
+                      <Copy size={20} />
+                    </button>
                   </div>
-                  <button className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all">
-                    Adicionar Novo
-                  </button>
                 </div>
-              </div>
-              <div className="divide-y divide-zinc-800">
-                {squad.members.map(member => (
-                  <div key={member.id} className="p-6 flex items-center justify-between hover:bg-zinc-800/30 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <img src={member.avatar} alt={member.name} className="w-12 h-12 rounded-2xl bg-zinc-800" referrerPolicy="no-referrer" />
-                      <div>
-                        <p className="font-bold">{member.name}</p>
-                        <p className="text-zinc-500 text-xs">Entrou em 12 de Jan, 2024</p>
+              )}
+
+              {/* Lista de membros */}
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
+                <div className="p-8 border-b border-zinc-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold mb-1">Membros da Equipe</h3>
+                    <p className="text-zinc-500 text-sm">Gerencie quem tem acesso aos treinos do squad.</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-zinc-800">
+                  {squad.members.map(member => (
+                    <div key={member.id} className="p-6 flex items-center justify-between hover:bg-zinc-800/30 transition-colors">
+                      <div className="flex items-center gap-4">
+                        <img src={member.avatar} alt={member.name} className="w-12 h-12 rounded-2xl bg-zinc-800" referrerPolicy="no-referrer" />
+                        <div>
+                          <p className="font-bold">{member.name}</p>
+                          <p className="text-zinc-500 text-xs capitalize">{member.role}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-8">
+                        {member.role === 'admin' && (
+                          <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                            Admin
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-8">
-                      <div className="text-right">
-                        <p className="text-xs text-zinc-500 uppercase font-bold tracking-widest mb-1">Permissão</p>
-                        <select className="bg-transparent border-none text-sm font-medium focus:ring-0 outline-none cursor-pointer">
-                          <option value="admin">Administrador</option>
-                          <option value="member">Membro</option>
-                        </select>
-                      </div>
-                      <button className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500">
-                        <MoreVertical size={20} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           )}

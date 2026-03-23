@@ -35,6 +35,7 @@ export interface Squad {
   id: string;
   name: string;
   icon: string;
+  inviteCode?: string;
   members: Member[];
   weeklyPlan: DayPlan[];
   templates: WorkoutTemplate[];
