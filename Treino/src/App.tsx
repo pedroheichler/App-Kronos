@@ -28,42 +28,24 @@ import {
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, DayPlan, Exercise } from './types';
-import { INITIAL_SQUAD } from './constants/mockData';
 import { Onboarding } from './components/Onboarding';
 
- function LoginTemp() {
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-
-    const login = async () => {
-      await supabase.auth.signInWithPassword({ email, password });
-    };
-
-    return (
-      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
-        <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
-          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
-            style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
-          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
-            style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
-          <button onClick={login}
-            style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
-            Entrar
-          </button>
-        </div>
-      </div>
-    );
-  }
 
 export default function App() {
 
   // ── Todos os hooks primeiro ──
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [squad, setSquad] = useState<Squad>(INITIAL_SQUAD);
+  const [squad, setSquad] = useState<Squad>({
+    id: '',
+    name: '',
+    icon: '',
+    members: [],
+    weeklyPlan: [],
+    templates: [],
+  });
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
-  const [selectedDayId, setSelectedDayId] = useState<string>(squad.weeklyPlan[0].id);
+  const [selectedDayId, setSelectedDayId] = useState<string>('');
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
@@ -150,13 +132,28 @@ useEffect(() => {
               }));
 
               // Busca exercícios de cada dia
+              const today = new Date().toISOString().split('T')[0];
+
               Promise.all(daysData.map((day: any) => fetchExercisesByDay(day.id)))
-                .then(exercisesPerDay => {
+                .then(async exercisesPerDay => {
+                  const { data: progressData } = await supabase
+                    .from('exercise_progress')
+                    .select('exercise_id, completed')
+                    .eq('user_id', session?.user?.id)
+                    .eq('date', today);
+
+                  const progressMap = new Map(
+                    (progressData || []).map((p: any) => [p.exercise_id, p.completed])
+                  );
+
                   setSquad(prev => ({
                     ...prev,
                     weeklyPlan: prev.weeklyPlan.map((day, i) => ({
                       ...day,
-                      exercises: exercisesPerDay[i],
+                      exercises: exercisesPerDay[i].map(ex => ({
+                        ...ex,
+                        completed: progressMap.get(ex.id) ?? false,
+                      })),
                     })),
                   }));
                 })
@@ -176,7 +173,7 @@ useEffect(() => {
     }
   }
 
-  if (!session) return <LoginTemp />;
+  if (!session) return null;
 
 if (!squadId) return (
   <Onboarding
@@ -206,14 +203,31 @@ if (!squadId) return (
   };
 
   const todayIndex = (new Date().getDay() + 6) % 7; // Adjust to Monday = 0
-  const todayId = squad.weeklyPlan[todayIndex].id;
+  const todayId = squad.weeklyPlan[todayIndex]?.id ?? squad.weeklyPlan[0]?.id ?? '';
 
-  const toggleExercise = (dayId: string, exerciseId: string) => {
+  const toggleExercise = async (dayId: string, exerciseId: string) => {
+    const day = squad.weeklyPlan.find(d => d.id === dayId);
+    const ex = day?.exercises.find(e => e.id === exerciseId);
+    if (!ex) return;
+
+    const newCompleted = !ex.completed;
+
+    await supabase
+      .from('exercise_progress')
+      .upsert({
+        exercise_id: exerciseId,
+        user_id: session.user.id,
+        completed: newCompleted,
+        date: new Date().toISOString().split('T')[0],
+      }, { onConflict: 'exercise_id,user_id,date' });
+
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
-        day.id === dayId 
-          ? { ...day, exercises: day.exercises.map(ex => ex.id === exerciseId ? { ...ex, completed: !ex.completed } : ex) }
+      weeklyPlan: prev.weeklyPlan.map(day =>
+        day.id === dayId
+          ? { ...day, exercises: day.exercises.map(ex =>
+              ex.id === exerciseId ? { ...ex, completed: newCompleted } : ex
+            )}
           : day
       )
     }));
@@ -308,15 +322,15 @@ if (!squadId) return (
     }));
   };
 
-  const currentDayPlan = squad.weeklyPlan.find(d => d.id === todayId) || squad.weeklyPlan[0];
+  const currentDayPlan = squad.weeklyPlan.find(d => d.id === todayId) ?? squad.weeklyPlan[0] ?? { id: '', name: '', focus: '', exercises: [] };
   const completedCount = currentDayPlan.exercises.filter(ex => ex.completed).length;
   const totalCount = currentDayPlan.exercises.length;
   const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
     <div className="flex h-screen bg-[#09090b] text-zinc-100 font-sans overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-64 border-r border-zinc-800 flex flex-col p-6 gap-8 bg-[#09090b] z-20">
+      {/* Sidebar — só aparece em telas md+ */}
+      <aside className="hidden md:flex w-64 border-r border-zinc-800 flex-col p-6 gap-8 bg-[#09090b] z-20">
         <div className="flex items-center gap-3 px-2">
           <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
             <Dumbbell className="text-white w-6 h-6" />
@@ -325,58 +339,58 @@ if (!squadId) return (
         </div>
 
         <nav className="flex flex-col gap-2">
-          <NavItem 
-            icon={<LayoutDashboard size={20} />} 
-            label="Dashboard" 
-            active={currentView === 'dashboard'} 
-            onClick={() => setCurrentView('dashboard')} 
+          <NavItem
+            icon={<LayoutDashboard size={20} />}
+            label="Dashboard"
+            active={currentView === 'dashboard'}
+            onClick={() => setCurrentView('dashboard')}
           />
-          <NavItem 
-            icon={<Calendar size={20} />} 
-            label="Semana" 
-            active={currentView === 'week'} 
-            onClick={() => setCurrentView('week')} 
+          <NavItem
+            icon={<Calendar size={20} />}
+            label="Semana"
+            active={currentView === 'week'}
+            onClick={() => setCurrentView('week')}
           />
-          <NavItem 
-            icon={<Users size={20} />} 
-            label="Equipe" 
-            active={currentView === 'squad'} 
-            onClick={() => setCurrentView('squad')} 
+          <NavItem
+            icon={<Users size={20} />}
+            label="Equipe"
+            active={currentView === 'squad'}
+            onClick={() => setCurrentView('squad')}
           />
-          <NavItem 
-            icon={<TrendingUp size={20} />} 
-            label="Progresso" 
-            active={currentView === 'progress'} 
-            onClick={() => setCurrentView('progress')} 
+          <NavItem
+            icon={<TrendingUp size={20} />}
+            label="Progresso"
+            active={currentView === 'progress'}
+            onClick={() => setCurrentView('progress')}
           />
         </nav>
 
         <div className="mt-auto">
-          <NavItem 
-            icon={<Settings size={20} />} 
-            label="Configurações" 
-            active={currentView === 'settings'} 
-            onClick={() => setCurrentView('settings')} 
+          <NavItem
+            icon={<Settings size={20} />}
+            label="Configurações"
+            active={currentView === 'settings'}
+            onClick={() => setCurrentView('settings')}
           />
         </div>
       </aside>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto relative">
-        <div className="max-w-7xl mx-auto p-8 pb-24">
+        <div className="max-w-7xl mx-auto p-4 md:p-8 pb-28 md:pb-24">
           {/* Header */}
-          <header className="flex items-center justify-between mb-10">
-            <div className="flex items-center gap-4">
-              <img 
-                src={squad.icon} 
-                alt={squad.name} 
-                className="w-16 h-16 rounded-2xl object-cover border-2 border-zinc-800 shadow-xl"
+          <header className="flex items-center justify-between mb-6 md:mb-10">
+            <div className="flex items-center gap-3">
+              <img
+                src={squad.icon}
+                alt={squad.name}
+                className="w-11 h-11 md:w-16 md:h-16 rounded-2xl object-cover border-2 border-zinc-800 shadow-xl"
                 referrerPolicy="no-referrer"
               />
               <div>
-                <h2 className="text-2xl font-bold">{squad.name}</h2>
-                <p className="text-zinc-500 text-sm flex items-center gap-2">
-                  <Users size={14} /> {squad.members.length} membros ativos
+                <h2 className="text-lg md:text-2xl font-bold leading-tight">{squad.name}</h2>
+                <p className="text-zinc-500 text-xs md:text-sm flex items-center gap-1">
+                  <Users size={12} /> {squad.members.length} membros
                 </p>
               </div>
             </div>
@@ -746,6 +760,15 @@ if (!squadId) return (
         </div>
       </main>
 
+      {/* Bottom Nav — só aparece em mobile */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#09090b]/95 backdrop-blur border-t border-zinc-800 flex items-center justify-around px-2 py-2 safe-area-bottom">
+        <MobileNavItem icon={<LayoutDashboard size={22} />} label="Início" active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
+        <MobileNavItem icon={<Calendar size={22} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
+        <MobileNavItem icon={<Users size={22} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
+        <MobileNavItem icon={<TrendingUp size={22} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
+        <MobileNavItem icon={<Settings size={22} />} label="Config" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
+      </nav>
+
       {/* Editor Modal */}
       <AnimatePresence>
         {isEditorOpen && editingExercise && (
@@ -830,6 +853,18 @@ if (!squadId) return (
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function MobileNavItem({ icon, label, active, onClick }: { icon: ReactNode, label: string, active?: boolean, onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${active ? 'text-emerald-400' : 'text-zinc-500'}`}
+    >
+      {icon}
+      <span className="text-[10px] font-semibold">{label}</span>
+    </button>
   );
 }
 

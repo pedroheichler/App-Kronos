@@ -31,8 +31,8 @@ function Auth() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0A0A0A" }}>
-      <div style={{ width: 360, padding: 24, border: "1px solid #e7ff5e", borderRadius: 12, background: "#111111" }}>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0A0A0A", padding: "24px 16px" }}>
+      <div style={{ width: "100%", maxWidth: 360, padding: 24, border: "1px solid #e7ff5e", borderRadius: 16, background: "#111111", boxSizing: "border-box" }}>
         <h2 style={{ marginBottom: 4, color: "#ffffff" }}>App Kronos</h2>
         <p style={{ marginBottom: 20, color: "#888", fontSize: 14 }}>Acesse sua conta para continuar</p>
 
@@ -42,7 +42,7 @@ function Auth() {
           onChange={(e) => setEmail(e.target.value)}
           placeholder="seuemail@gmail.com"
           type="email"
-          style={{ width: "100%", padding: 10, marginBottom: 12, background: "#2e2e2e", border: "1px solid #333", borderRadius: 8, color: "#ffffff", boxSizing: "border-box" }}
+          style={{ width: "100%", padding: 12, marginBottom: 12, background: "#2e2e2e", border: "1px solid #333", borderRadius: 8, color: "#ffffff", boxSizing: "border-box", fontSize: 16 }}
         />
 
         <label style={{ display: "block", marginBottom: 6, color: "#ffffff", fontSize: 14 }}>Senha</label>
@@ -52,7 +52,7 @@ function Auth() {
           onKeyDown={(e) => e.key === "Enter" && signIn()}
           type="password"
           placeholder="••••••••"
-          style={{ width: "100%", padding: 10, marginBottom: 16, background: "#2e2e2e", border: "1px solid #333", borderRadius: 8, color: "#ffffff", boxSizing: "border-box" }}
+          style={{ width: "100%", padding: 12, marginBottom: 16, background: "#2e2e2e", border: "1px solid #333", borderRadius: 8, color: "#ffffff", boxSizing: "border-box", fontSize: 16 }}
         />
 
         {erro && (
@@ -63,11 +63,11 @@ function Auth() {
 
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={signIn} disabled={loading}
-            style={{ flex: 1, padding: 10, background: "#e7ff5e", border: "none", borderRadius: 8, color: "#000", fontWeight: 600, cursor: "pointer", opacity: loading ? 0.6 : 1 }}>
+            style={{ flex: 1, padding: 14, background: "#e7ff5e", border: "none", borderRadius: 8, color: "#000", fontWeight: 700, cursor: "pointer", opacity: loading ? 0.6 : 1, fontSize: 15 }}>
             {loading ? "..." : "Entrar"}
           </button>
           <button onClick={signUp} disabled={loading}
-            style={{ flex: 1, padding: 10, background: "transparent", border: "1px solid #444", borderRadius: 8, color: "#ffffff", cursor: "pointer", opacity: loading ? 0.6 : 1 }}>
+            style={{ flex: 1, padding: 14, background: "transparent", border: "1px solid #444", borderRadius: 8, color: "#ffffff", cursor: "pointer", opacity: loading ? 0.6 : 1, fontSize: 15 }}>
             {loading ? "..." : "Criar conta"}
           </button>
         </div>
@@ -88,10 +88,10 @@ function AppSelector({ session }: { session: Session }) {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0A0A0A" }}>
-      <div style={{ width: 400, padding: 32 }}>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0A0A0A", padding: "24px 16px" }}>
+      <div style={{ width: "100%", maxWidth: 400, boxSizing: "border-box" }}>
         <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <h1 style={{ color: "#ffffff", fontSize: 24, marginBottom: 8 }}>Olá! 👋</h1>
+          <h1 style={{ color: "#ffffff", fontSize: 26, marginBottom: 8 }}>Olá! 👋</h1>
           <p style={{ color: "#888", fontSize: 14 }}>{session.user.email}</p>
           <p style={{ color: "#888", fontSize: 14, marginTop: 4 }}>Para onde você quer ir?</p>
         </div>
@@ -99,22 +99,22 @@ function AppSelector({ session }: { session: Session }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
           {apps.map((app) => (
             <a key={app.nome} href={app.url}
-              style={{ display: "flex", alignItems: "center", gap: 16, padding: "20px 24px", background: "#111", border: "1px solid #222", borderRadius: 12, textDecoration: "none", color: "#fff", cursor: "pointer" }}
+              style={{ display: "flex", alignItems: "center", gap: 16, padding: "20px 20px", background: "#111", border: "1px solid #222", borderRadius: 16, textDecoration: "none", color: "#fff", cursor: "pointer" }}
               onMouseEnter={(e) => (e.currentTarget.style.borderColor = app.cor)}
               onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#222")}>
-              <span style={{ fontSize: 32 }}>{app.emoji}</span>
+              <span style={{ fontSize: 36 }}>{app.emoji}</span>
               <div>
-                <div style={{ fontWeight: 600, fontSize: 16 }}>{app.nome}</div>
+                <div style={{ fontWeight: 700, fontSize: 17 }}>{app.nome}</div>
                 <div style={{ color: "#888", fontSize: 13, marginTop: 2 }}>{app.descricao}</div>
               </div>
-              <span style={{ marginLeft: "auto", color: "#444", fontSize: 20 }}>→</span>
+              <span style={{ marginLeft: "auto", color: "#555", fontSize: 22 }}>→</span>
             </a>
           ))}
         </div>
 
         <div style={{ textAlign: "center" }}>
           <button onClick={handleSignOut}
-            style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 13 }}>
+            style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, padding: "8px 16px" }}>
             Sair da conta
           </button>
         </div>
