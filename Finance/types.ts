@@ -16,9 +16,25 @@ export interface Transaction {
 export interface Investment {
   id: string;
   name: string;
-  value: number;
+  initialAmount: number;
+  currentValue: number;
   type: 'Ações' | 'FIIs' | 'Renda Fixa' | 'Cripto' | 'Outros';
-  change: number; // Percentual de variação
+  date: string;
+}
+
+export interface DashboardSummary {
+  totalIncome: number;
+  totalExpenses: number;
+  totalInvested: number;
+  totalCurrentValue: number;
+  totalProfit: number;
+  profitPercentage: number;
+  balance: number;
+  monthlyExpenses: number;
+  monthlyTrend: {
+    value: string;
+    isUp: boolean;
+  };
 }
 
 export interface FinancialSummary {

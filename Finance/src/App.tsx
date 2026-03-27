@@ -25,9 +25,10 @@ import {
   Pie,
 } from "recharts";
 import { AppSwitcher } from './components/AppSwitcher';
-import { Transaction, Investment, TransactionType } from "../types";
+import { Transaction, Investment, TransactionType, DashboardSummary } from "../types";
 import DashboardCard from "./components/DashboardCard";
 import { supabase } from "./services/supabase";
+import { getFinancialInsights } from "./services/insights";
 
 const COLORS = ["#FFC400","#7C7FFF", "#00FF9C", "#FF3131", "#A855FF"];
 
@@ -46,22 +47,26 @@ const App: React.FC = () => {
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
   const [defaultType, setDefaultType] = useState<"income" | "expense">("expense");
 
-  console.log("USER:", session?.user?.id);
-
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      console.log('sessão:', data.session);
-      console.log('erro:', error);
-      setSession(data.session);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
       setAuthLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => listener.subscription.unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!authLoading && !session && import.meta.env.PROD) {
+      window.location.href = '/';
+    }
+  }, [session, authLoading]);
+
+  useEffect(() => {
+    if (session) {
+      fetchData();
+    }
+  }, [session]);
 
   // ---- Carregar dados do Supabase quando estiver logado ----
   const fetchData = async () => {
@@ -109,24 +114,6 @@ const App: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-  if (!session) {
-    setCheckingSquad(false);
-    return;
-  }
-
-  supabase
-    .from('squad_members')
-    .select('squad_id')
-    .eq('user_id', session.user.id)
-    .limit(1)
-    .then(({ data, error }) => {
-      console.log('squad data:', data);
-      console.log('squad error:', error);
-      setSquadId(data?.[0]?.squad_id || null);
-      setCheckingSquad(false);
-    });
-}, [session?.user?.id]); // ← só roda quando o ID muda
 
   // ---- Financial Calculations ----
   const summary = useMemo<DashboardSummary>(() => {
@@ -325,20 +312,15 @@ const App: React.FC = () => {
   const formatCurrency = (val: number) =>
     val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-  // ---- Só aqui entram os returns condicionais ----
-if (!session && !authLoading) {
-  if (import.meta.env.PROD) {
-    window.location.href = '/';
-  }
-}
+  if (authLoading) return null;
 
   return (
-    <div className="min-h-screen pb-20 px-5 md:px-8 bg-[#0A0A0A] flex flex-col gap-6">
+    <div className="min-h-screen pb-20 bg-[#0A0A0A] flex flex-col gap-6">
       {/* Navigation */}
       <header className="sticky top-0 z-40 backdrop-blur-md border-b border-[#232323] bg-[#0A0A0A]/80">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <h1 className="font-extrabold tracking-tight text-slate-900 text-white text-8px md:text-1xl lg:text-4xl">FinanceFlow</h1>
+            <h1 className="font-extrabold tracking-tight text-white text-base md:text-2xl lg:text-4xl">FinanceFlow</h1>
           </div>
           <div className="flex items-center gap-3">
 
@@ -368,9 +350,9 @@ if (!session && !authLoading) {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8 ">
+      <main className="max-w-7xl mx-auto px-4 md:px-8 py-4 md:py-8">
         {/* Top Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 md:gap-6 mb-6 md:mb-8">
           <DashboardCard 
             title="Ganho Mensal"
             value={`R$ ${summary.totalIncome.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
@@ -416,7 +398,7 @@ if (!session && !authLoading) {
           <div className="lg:col-span-2 space-y-8 ">
 
             {/* Expenses Analysis */}
-            <div className="p-8 rounded-[2rem] border border-[#262626] shadow-sm bg-[#111111]  ">
+            <div className="p-4 md:p-8 rounded-[2rem] border border-[#262626] shadow-sm bg-[#111111]">
               <div className="flex items-center justify-between mb-8">
                 <div>
                   <h3 className="text-xl font-bold text-slate-800 text-[#F5F5F5]">Distribuição de Gastos</h3>
@@ -463,9 +445,9 @@ if (!session && !authLoading) {
 
             {/* Transactions Table */}
             <div className="rounded-[2rem] border border-[#262626] shadow-sm overflow-hidden bg-[#111111]">
-              <div className="p-8 border-b border-[#262626] flex items-center justify-between">
+              <div className="p-4 md:p-8 border-b border-[#262626] flex items-center justify-between">
                 <div>
-                  <h3 className="text-xl font-bold text-[#F5F5F5]">Atividade Recente</h3>
+                  <h3 className="text-lg md:text-xl font-bold text-[#F5F5F5]">Atividade Recente</h3>
                   <p className="text-sm text-[#A3A3A3]">{transactions.length} registros no período</p>
                 </div>
               </div>
@@ -474,18 +456,18 @@ if (!session && !authLoading) {
                 <table className="w-full text-left">
                   <thead className="bg-[#111111] border-b border-[#262626] text-[#A3A3A3] text-[10px] font-bold uppercase tracking-wider">
                     <tr>
-                      <th className="px-8 py-4">Descrição</th>
-                      <th className="px-8 py-4">Categoria</th>
-                      <th className="px-8 py-4 text-right">Valor</th>
-                      <th className="px-8 py-4 text-center">Ações</th>
+                      <th className="px-3 md:px-8 py-3 md:py-4">Descrição</th>
+                      <th className="px-3 md:px-8 py-3 md:py-4 hidden md:table-cell">Categoria</th>
+                      <th className="px-3 md:px-8 py-3 md:py-4 text-right">Valor</th>
+                      <th className="px-3 md:px-8 py-3 md:py-4 text-center">Ações</th>
                     </tr>
                   </thead>
 
                   <tbody className="divide-y divide-[#262626]">
                     {transactions.map((t) => (
                       <tr key={t.id} className="hover:bg-[#161616] transition-colors group">
-                        <td className="px-8 py-5">
-                          <div className="flex items-center gap-4">
+                        <td className="px-3 md:px-8 py-3 md:py-5">
+                          <div className="flex items-center gap-2 md:gap-4">
                             <div
                               className={`p-2.5 rounded-xl border ${
                                 t.type === TransactionType.INCOME
@@ -509,14 +491,14 @@ if (!session && !authLoading) {
                           </div>
                         </td>
 
-                        <td className="px-8 py-5">
+                        <td className="px-3 md:px-8 py-3 md:py-5 hidden md:table-cell">
                           <span className="px-3 py-1 rounded-full bg-[#1A1A1A] border border-[#2E2E2E] text-[#CFCFCF] text-[10px] font-extrabold uppercase tracking-tighter">
                             {t.category}
                           </span>
                         </td>
 
                         <td
-                          className={`px-8 py-5 text-right font-black ${
+                          className={`px-3 md:px-8 py-3 md:py-5 text-right font-black text-sm md:text-base ${
                             t.type === TransactionType.INCOME
                               ? "text-[#39FF14]"
                               : "text-[#FF3131]"
@@ -525,7 +507,7 @@ if (!session && !authLoading) {
                           {t.type === TransactionType.INCOME ? "+" : "-"} {formatCurrency(t.amount)}
                         </td>
 
-                        <td className="px-8 py-5 text-center">
+                        <td className="px-3 md:px-8 py-3 md:py-5 text-center">
                           <button
                             className="p-2 rounded-lg text-[#A3A3A3] hover:text-[#FF3131] hover:bg-[#FF3131]/10 transition-all"
                             onClick={async () => {
@@ -565,7 +547,7 @@ if (!session && !authLoading) {
 
           {/* Column Right: Investments Portfolio */}
           <div className="space-y-8 ">
-            <div className="bg-[#111111] p-8 rounded-[2rem] border border-[#262626] shadow-sm">
+            <div className="bg-[#111111] p-4 md:p-8 rounded-[2rem] border border-[#262626] shadow-sm">
               <div className="flex items-center justify-between mb-8">
                 <div>
                   <h3 className="text-xl font-bold text-[#F5F5F5]">Portfólio</h3>

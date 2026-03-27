@@ -3,7 +3,7 @@ import { supabase } from '../services/supabase';
 
 const APPS = [
   { id: 'finance', nome: 'Finance', emoji: '💰', url: '/finance/' },
-  { id: 'treino', nome: 'Treino', emoji: '🏋️', url: '/squadfit/' },
+  { id: 'treino', nome: 'Treino', emoji: '🏋️', url: '/treino/' },
 ];
 
 interface AppSwitcherProps {
