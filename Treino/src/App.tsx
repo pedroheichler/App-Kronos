@@ -1,4 +1,4 @@
-import { useState, useEffect, ReactNode } from 'react';
+import { useState, useEffect, useCallback, ReactNode } from 'react';
 import { supabase } from './services/supabase';
 import {
   addExercise as addExerciseToDB,
@@ -11,7 +11,7 @@ import {
   Calendar, 
   Users, 
   TrendingUp, 
-  Settings, 
+  Settings as SettingsIcon,
   Plus, 
   CheckCircle2,
   Circle, 
@@ -29,7 +29,28 @@ import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, DayPlan, Exercise } from './types';
 import { Onboarding } from './components/Onboarding';
+import { Settings } from './components/Settings';
 
+
+function DevLogin() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
+      <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
+        <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
+          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
+          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+        <button onClick={() => supabase.auth.signInWithPassword({ email, password })}
+          style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+          Entrar
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
 
@@ -50,6 +71,7 @@ export default function App() {
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
   const [checkingSquad, setCheckingSquad] = useState(true);
+  const [diasTreinados, setDiasTreinados] = useState(0);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -99,7 +121,14 @@ useEffect(() => {
         .from('squad_members')
         .select('user_id, role')
         .eq('squad_id', squadId)
-        .then(({ data: membersData }) => {
+        .then(async ({ data: membersData }) => {
+          // Busca nomes dos perfis
+          const userIds = (membersData || []).map((m: any) => m.user_id);
+          const { data: profilesData } = await supabase
+            .from('profiles')
+            .select('id, name')
+            .in('id', userIds);
+          const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p.name]));
 
           // Busca dias do squad
           supabase
@@ -118,7 +147,7 @@ useEffect(() => {
                 inviteCode: squadData.invite_code,
                 members: (membersData || []).map((m: any) => ({
                   id: m.user_id,
-                  name: m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro',
+                  name: profileMap.get(m.user_id) || (m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro'),
                   avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
                   role: m.role,
                   isOnline: m.user_id === session?.user?.id,
@@ -162,25 +191,48 @@ useEffect(() => {
         });
     });
 }, [squadId]);
-  
+
+  const fetchDiasTreinados = useCallback(async () => {
+    if (!session?.user?.id) return;
+    const { data } = await supabase
+      .from('exercise_progress')
+      .select('date')
+      .eq('user_id', session.user.id)
+      .eq('completed', true);
+    const unique = new Set((data || []).map((r: any) => r.date));
+    setDiasTreinados(unique.size);
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    fetchDiasTreinados();
+  }, [fetchDiasTreinados]);
 
   // ── Returns condicionais (só depois de todos os hooks) ──
-  if (authLoading) return <div style={{ color: '#fff', padding: 40, background: '#09090b', minHeight: '100vh' }}>Carregando...</div>;
+  if (authLoading || checkingSquad) return <div style={{ color: '#fff', padding: 40, background: '#09090b', minHeight: '100vh' }}>Carregando...</div>;
 
-  if (!session && !authLoading) {
+  if (!session) {
     if (import.meta.env.PROD) {
       window.location.href = '/';
+      return null;
     }
+    return <DevLogin />;
   }
 
-  if (!session) return null;
-
-if (!squadId) return (
-  <Onboarding
-    userId={session.user.id}
-    onComplete={() => setCheckingSquad(true)}
-  />
-);
+  if (!squadId) return (
+    <Onboarding
+      userId={session.user.id}
+      onComplete={() => {
+        supabase
+          .from('squad_members')
+          .select('squad_id')
+          .eq('user_id', session.user.id)
+          .limit(1)
+          .then(({ data }) => {
+            setSquadId(data?.[0]?.squad_id || null);
+          });
+      }}
+    />
+  );
 
   const openEditor = (dayId: string, exercise: Exercise) => {
     setEditingExercise({ dayId, exercise });
@@ -231,6 +283,8 @@ if (!squadId) return (
           : day
       )
     }));
+
+    fetchDiasTreinados();
   };
 
   const resetDay = (dayId: string) => {
@@ -276,10 +330,18 @@ if (!squadId) return (
   const updateDayFocus = (dayId: string, focus: string) => {
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
+      weeklyPlan: prev.weeklyPlan.map(day =>
         day.id === dayId ? { ...day, focus } : day
       )
     }));
+
+    supabase
+      .from('workout_days')
+      .update({ focus })
+      .eq('id', dayId)
+      .then(({ error }) => {
+        if (error) console.error('Erro ao salvar foco:', error);
+      });
   };
 
   const saveAsTemplate = (dayId: string) => {
@@ -367,7 +429,7 @@ if (!squadId) return (
 
         <div className="mt-auto">
           <NavItem
-            icon={<Settings size={20} />}
+            icon={<SettingsIcon size={20} />}
             label="Configurações"
             active={currentView === 'settings'}
             onClick={() => setCurrentView('settings')}
@@ -525,6 +587,14 @@ if (!squadId) return (
                         )}
                       </div>
                     ))}
+                  </div>
+                </section>
+
+                <section className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 flex items-center gap-3">
+                  <span className="text-2xl">🔥</span>
+                  <div>
+                    <p className="text-white font-bold text-xl">{diasTreinados} dias treinados</p>
+                    <p className="text-zinc-400 text-xs">exercícios concluídos no total</p>
                   </div>
                 </section>
 
@@ -757,6 +827,14 @@ if (!squadId) return (
               </div>
             </div>
           )}
+
+          {currentView === 'settings' && (
+            <Settings
+              session={session}
+              squad={squad}
+              onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
+            />
+          )}
         </div>
       </main>
 
@@ -766,7 +844,7 @@ if (!squadId) return (
         <MobileNavItem icon={<Calendar size={22} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
         <MobileNavItem icon={<Users size={22} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
         <MobileNavItem icon={<TrendingUp size={22} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
-        <MobileNavItem icon={<Settings size={22} />} label="Config" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
+        <MobileNavItem icon={<SettingsIcon size={22} />} label="Config" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
       </nav>
 
       {/* Editor Modal */}
