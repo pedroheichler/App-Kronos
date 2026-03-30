@@ -41,7 +41,7 @@ const DashboardCard: React.FC<DashboardCardProps> = ({
         {trend && (
           <p
             className={`text-xs mt-2 font-semibold ${
-              trend.isUp ? "text-[#39FF14]" : "text-[#FF3131]"
+              trend.isUp ? "text-emerald-400" : "text-red-400"
             }`}
           >
             {trend.isUp ? "↑" : "↓"} {trend.value}{" "}
