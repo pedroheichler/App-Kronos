@@ -30,7 +30,7 @@ import DashboardCard from "./components/DashboardCard";
 import { supabase } from "./services/supabase";
 import { getFinancialInsights } from "./services/insights";
 
-const COLORS = ["#FFC400","#7C7FFF", "#00FF9C", "#FF3131", "#A855FF"];
+const COLORS = ["#10b981","#6366f1", "#f59e0b", "#ef4444", "#a78bfa"];
 
 const App: React.FC = () => {
   // ---- Auth session (hooks SEMPRE rodam) ----
@@ -48,6 +48,11 @@ const App: React.FC = () => {
   const [defaultType, setDefaultType] = useState<"income" | "expense">("expense");
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthLoading(false);
+    });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setAuthLoading(false);
@@ -56,11 +61,6 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (!authLoading && !session && import.meta.env.PROD) {
-      window.location.href = '/';
-    }
-  }, [session, authLoading]);
 
   useEffect(() => {
     if (session) {
@@ -312,7 +312,27 @@ const App: React.FC = () => {
   const formatCurrency = (val: number) =>
     val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-  if (authLoading) return null;
+  if (authLoading) return <div style={{ color: '#fff', padding: 40, background: '#0A0A0A', minHeight: '100vh' }}>Carregando...</div>;
+
+  if (!session) {
+    if (import.meta.env.PROD) {
+      window.location.href = '/';
+      return null;
+    }
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#0A0A0A' }}>
+        <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
+          <input id="fin-email" placeholder="email" style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          <input id="fin-pass" placeholder="senha" type="password" style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          <button onClick={() => supabase.auth.signInWithPassword({ email: (document.getElementById('fin-email') as HTMLInputElement).value, password: (document.getElementById('fin-pass') as HTMLInputElement).value })}
+            style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            Entrar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-20 bg-[#0A0A0A] flex flex-col gap-6">
@@ -320,7 +340,7 @@ const App: React.FC = () => {
       <header className="sticky top-0 z-40 backdrop-blur-md border-b border-[#232323] bg-[#0A0A0A]/80">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <h1 className="font-extrabold tracking-tight text-white text-base md:text-2xl lg:text-4xl">FinanceFlow</h1>
+            <h1 className="font-bold tracking-tight text-white text-base md:text-xl">Finance</h1>
           </div>
           <div className="flex items-center gap-3">
 
@@ -330,9 +350,9 @@ const App: React.FC = () => {
               setDefaultType("income");
               setShowTransModal(true);
             }}
-            className="bg-[#39FF14]/10 border border-[#39FF14]/30 shadow-[0_0_12px_rgba(57,255,20,0.25)] hover:bg-[#39FF14]/80 text-white px-2 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1 md:gap-2 transition-all hover:scale-105 active:scale-95 shadow-md"
+            className="bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white px-3 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1 md:gap-2 transition-all active:scale-95"
           >
-            <Plus size={18} /> Ganho
+            <Plus size={16} /> Ganho
           </button>
 
           {/* BOTÃO GASTO */}
@@ -341,9 +361,9 @@ const App: React.FC = () => {
               setDefaultType("expense");
               setShowTransModal(true);
             }}
-            className="bg-[#FF3131]/10 border border-[#FF3131]/30 shadow-[0_0_12px_rgba(255,49,49,0.25)] hover:bg-[#FF3131]/80 text-white px-2 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1 md:gap-2 transition-all hover:scale-105 active:scale-95 shadow-md"
+            className="bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white px-3 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-semibold flex items-center gap-1 md:gap-2 transition-all active:scale-95"
           >
-            <Plus size={18} /> Gasto
+            <Plus size={16} /> Gasto
           </button>
           <AppSwitcher currentApp="finance" userEmail={session?.user?.email} />
         </div>
@@ -353,41 +373,41 @@ const App: React.FC = () => {
       <main className="max-w-7xl mx-auto px-4 md:px-8 py-4 md:py-8">
         {/* Top Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 md:gap-6 mb-6 md:mb-8">
-          <DashboardCard 
-            title="Ganho Mensal"
+          <DashboardCard
+            title="Ganho Total"
             value={`R$ ${summary.totalIncome.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<TrendingUp className="w-5 h-5 text-[#39FF14] " />}
-            colorClass="bg-[#39FF14]/10 border-[#39FF14]/30 shadow-[0_0_12px_rgba(57,255,20,0.18)]"
+            icon={<TrendingUp className="w-5 h-5 text-emerald-500" />}
+            colorClass="bg-emerald-500/10 border-emerald-500/20"
             trend={{ value: '12%', isUp: true, }}
           />
-          <DashboardCard 
-            title="Gastos Mensais" 
+          <DashboardCard
+            title="Gastos Totais"
             value={`R$ ${summary.totalExpenses.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<TrendingDown className="w-5 h-5 text-[#FF3131]" />}
-            colorClass="bg-[#FF3131]/10 border-[#FF3131]/30 shadow-[0_0_12px_rgba(255,49,49,0.18)]"
+            icon={<TrendingDown className="w-5 h-5 text-red-400" />}
+            colorClass="bg-red-500/10 border-red-500/20"
             trend={{ value: '5%', isUp: false }}
           />
-          <DashboardCard 
-            title="Saldo Total" 
+          <DashboardCard
+            title="Saldo Total"
             value={`R$ ${summary.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<CircleDollarSign  className="w-5 h-5 text-indigo-600 text-[#00E5FF]" />}
-            colorClass="bg-[#00E5FF]/10 border-[#00E5FF]/30 shadow-[0_0_12px_rgba(0,229,255,0.18)]" 
+            icon={<CircleDollarSign className="w-5 h-5 text-indigo-400" />}
+            colorClass="bg-indigo-500/10 border-indigo-500/20"
           />
-          <DashboardCard 
-            title="Total Investido" 
+          <DashboardCard
+            title="Total Investido"
             value={formatCurrency(summary.totalInvested)}
-            icon={<CircleDollarSign className="w-5 h-5 text-amber-600" />}
-            colorClass="bg-[#F7931A]/10 border border-[#F7931A]/30 text-amber-600 shadow-[0_0_6px_rgba(247,147,26,0.7)]"
+            icon={<CircleDollarSign className="w-5 h-5 text-amber-400" />}
+            colorClass="bg-amber-500/10 border-amber-500/20"
             subtitle="Custo de Aquisição"
           />
-          <DashboardCard 
-            title="Patrimônio Atual" 
+          <DashboardCard
+            title="Patrimônio Atual"
             value={formatCurrency(summary.totalCurrentValue)}
-            icon={<PieChartIcon className="w-5 h-5 text-[#39FF14]" />}
-            colorClass="bg-[#39FF14]/10 border-[#39FF14]/30 shadow-[0_0_12px_rgba(57,255,20,0.18)]"
-            trend={{ 
-              value: `${summary.profitPercentage.toFixed(1)}%`, 
-              isUp: summary.totalProfit >= 0 
+            icon={<PieChartIcon className="w-5 h-5 text-violet-400" />}
+            colorClass="bg-violet-500/10 border-violet-500/20"
+            trend={{
+              value: `${summary.profitPercentage.toFixed(1)}%`,
+              isUp: summary.totalProfit >= 0
             }}
             subtitle="Valor de mercado"
           />
@@ -469,10 +489,10 @@ const App: React.FC = () => {
                         <td className="px-3 md:px-8 py-3 md:py-5">
                           <div className="flex items-center gap-2 md:gap-4">
                             <div
-                              className={`p-2.5 rounded-xl border ${
+                              className={`p-2 rounded-lg ${
                                 t.type === TransactionType.INCOME
-                                  ? "bg-[#39FF14]/10 text-[#39FF14] border-[#39FF14]/30 shadow-[0_0_12px_rgba(57,255,20,0.18)]"
-                                  : "bg-[#FF3131]/10 text-[#FF3131] border-[#FF3131]/30 shadow-[0_0_12px_rgba(255,49,49,0.18)]"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : "bg-red-500/10 text-red-400"
                               }`}
                             >
                               {t.type === TransactionType.INCOME ? (
@@ -498,10 +518,10 @@ const App: React.FC = () => {
                         </td>
 
                         <td
-                          className={`px-3 md:px-8 py-3 md:py-5 text-right font-black text-sm md:text-base ${
+                          className={`px-3 md:px-8 py-3 md:py-5 text-right font-semibold text-sm md:text-base ${
                             t.type === TransactionType.INCOME
-                              ? "text-[#39FF14]"
-                              : "text-[#FF3131]"
+                              ? "text-emerald-400"
+                              : "text-red-400"
                           }`}
                         >
                           {t.type === TransactionType.INCOME ? "+" : "-"} {formatCurrency(t.amount)}
@@ -553,9 +573,9 @@ const App: React.FC = () => {
                   <h3 className="text-xl font-bold text-[#F5F5F5]">Portfólio</h3>
                   <p className="text-sm text-[#A3A3A3]">Rentabilidade de ativos</p>
                 </div>
-                <button  
+                <button
                   onClick={() => setShowInvModal(true)}
-                  className=" bg-[#F7931A]/10 hover:bg-[#F7931A] border border-[#F7931A]/30 text-white p-2.5 rounded-xl transition-all shadow-[0_0_6px_rgba(247,147,26,0.7)] hover:scale-110"
+                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 p-2 rounded-lg transition-all"
                 >
                   <Plus size={20} />
                 </button>
@@ -592,12 +612,9 @@ const App: React.FC = () => {
                               setEditingInvestment(inv);
                               setShowInvModal(true);
                             }}
-                            className="p-1.5 text-[#00E5FF] hover:bg-[#00E5FF]/10 border border-transparent hover:border-[#00E5FF]/30 rounded-md transition-all opacity-0 group-hover:opacity-100"
+                            className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 rounded-md transition-all opacity-0 group-hover:opacity-100"
                           >
-                            <Edit2
-                              size={16}
-                              className="drop-shadow-[0_0_6px_rgba(0,229,255,0.6)]"
-                            />
+                            <Edit2 size={15} />
                           </button>
 
                           {/* DELETE */}
@@ -615,12 +632,9 @@ const App: React.FC = () => {
 
                               setInvestments(prev => prev.filter(i => i.id !== inv.id));
                             }}
-                            className="p-1.5 text-[#FF3131] hover:bg-[#FF3131]/10 border border-transparent hover:border-[#FF3131]/30 rounded-md transition-all opacity-0 group-hover:opacity-100"
+                            className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all opacity-0 group-hover:opacity-100"
                           >
-                            <Trash2
-                              size={16}
-                              className="drop-shadow-[0_0_6px_rgba(255,49,49,0.6)]"
-                            />
+                            <Trash2 size={15} />
                           </button>
 
                         </div>
@@ -637,7 +651,7 @@ const App: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className={`flex items-center justify-between p-3 rounded-xl ${isPositive ? 'bg-[#39FF14]/10 border-[#39FF14]/30 text-[#39FF14]' : 'bg-[#FF3131]/10 border-[#FF3131]/30 text-[#FF3131]'}`}>
+                      <div className={`flex items-center justify-between p-3 rounded-xl ${isPositive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                         <div className="flex items-center gap-1.5">
                           {isPositive ? <TrendingUp size={14} /> : <TrendingDown size={14}  />}
                           <span className="text-sm font-black">{isPositive ? '+' : ''}{profitPerc.toFixed(1)}%</span>
@@ -649,7 +663,7 @@ const App: React.FC = () => {
                 })}
 
                 {investments.length === 0 && (
-                  <div className="py-12 text-center text-slate-300 font-medium italic border-2 border-dashed border-slate-100 rounded-3xl">
+                  <div className="py-12 text-center text-zinc-600 text-sm border border-dashed border-zinc-800 rounded-2xl">
                     Nada investido ainda.
                   </div>
                 )}
@@ -685,33 +699,27 @@ const App: React.FC = () => {
 
       {/* Transaction Modal */}
       {showTransModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 border border-slate-100">
-            <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
-              <div>
-                <h3 className="text-2xl font-black text-slate-800">Nova Transação</h3>
-                <p className="text-sm text-slate-400 font-medium">Registre sua movimentação</p>
-              </div>
-              <button onClick={() => setShowTransModal(false)} className="bg-white border border-slate-100 p-2 rounded-full text-slate-400 hover:text-slate-600 shadow-sm transition-all hover:rotate-90">✕</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-[#111111] rounded-2xl w-full max-w-md border border-[#262626] overflow-hidden">
+            <div className="p-6 border-b border-[#262626] flex justify-between items-center">
+              <h3 className="text-lg font-bold text-[#F5F5F5]">Nova Transação</h3>
+              <button onClick={() => setShowTransModal(false)} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">✕</button>
             </div>
-            <form onSubmit={handleAddTransaction} className="p-8 space-y-6">
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Descrição</label>
-                <input required name="description" type="text" className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-indigo-100 outline-none font-bold text-slate-700 transition-all" placeholder="Ex: Aluguel, Mercado, Salário..." />
+            <form onSubmit={handleAddTransaction} className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Descrição</label>
+                <input required name="description" type="text" className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="Ex: Aluguel, Mercado, Salário..." />
               </div>
-              <div className="grid grid-cols-1 gap-6">
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Valor (R$)</label>
-                  <input required name="amount" type="number" step="0.01" className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-indigo-100 outline-none font-bold text-slate-700 transition-all" placeholder="0.00" />
-                </div>
-              
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Valor (R$)</label>
+                <input required name="amount" type="number" step="0.01" className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="0.00" />
               </div>
               {defaultType === "expense" && (
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Categoria</label>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Categoria</label>
                   <select
                     name="category"
-                    className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-indigo-100 outline-none font-bold text-slate-700 appearance-none"
+                    className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all appearance-none"
                   >
                     <option value="Alimentação">Alimentação</option>
                     <option value="Lazer">Lazer</option>
@@ -722,8 +730,8 @@ const App: React.FC = () => {
                   </select>
                 </div>
               )}
-              <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-5 rounded-[1.5rem] transition-all mt-4 shadow-xl shadow-indigo-100 hover:scale-[1.02] active:scale-95">
-                Confirmar Lançamento
+              <button type="submit" className={`w-full ${defaultType === 'income' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'} text-white font-semibold py-3 rounded-xl transition-all mt-2`}>
+                Confirmar
               </button>
             </form>
           </div>
@@ -732,59 +740,56 @@ const App: React.FC = () => {
 
       {/* Investment Modal */}
       {showInvModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 border border-slate-100">
-            <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
-              <div>
-                <h3 className="text-2xl font-black text-slate-800">{editingInvestment ? 'Ajustar Ativo' : 'Novo Investimento'}</h3>
-                <p className="text-sm text-slate-400 font-medium">Controle seu patrimônio</p>
-              </div>
-              <button onClick={handleCloseInvModal} className="bg-white border border-slate-100 p-2 rounded-full text-slate-400 hover:text-slate-600 shadow-sm transition-all hover:rotate-90">✕</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-[#111111] rounded-2xl w-full max-w-md border border-[#262626] overflow-hidden">
+            <div className="p-6 border-b border-[#262626] flex justify-between items-center">
+              <h3 className="text-lg font-bold text-[#F5F5F5]">{editingInvestment ? 'Ajustar Ativo' : 'Novo Investimento'}</h3>
+              <button onClick={handleCloseInvModal} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">✕</button>
             </div>
-            <form onSubmit={handleInvestmentSubmit} className="p-8 space-y-6">
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Nome do Ativo</label>
-                <input 
-                  required 
-                  name="name" 
-                  type="text" 
+            <form onSubmit={handleInvestmentSubmit} className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Nome do Ativo</label>
+                <input
+                  required
+                  name="name"
+                  type="text"
                   defaultValue={editingInvestment?.name || ''}
-                  className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-amber-100 outline-none font-bold text-slate-700 transition-all" 
-                  placeholder="Ex: PETR4, Tesouro Direto, BTC..." 
+                  className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700"
+                  placeholder="Ex: PETR4, Tesouro Direto, BTC..."
                 />
               </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Valor Investido</label>
-                  <input 
-                    required 
-                    name="initialAmount" 
-                    type="number" 
-                    step="0.01" 
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Investido</label>
+                  <input
+                    required
+                    name="initialAmount"
+                    type="number"
+                    step="0.01"
                     defaultValue={editingInvestment?.initialAmount || ''}
-                    className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-amber-100 outline-none font-bold text-slate-700 transition-all" 
-                    placeholder="Quanto você pagou" 
+                    className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700"
+                    placeholder="Valor pago"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Valor Atual</label>
-                  <input 
-                    required 
-                    name="currentValue" 
-                    type="number" 
-                    step="0.01" 
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Valor Atual</label>
+                  <input
+                    required
+                    name="currentValue"
+                    type="number"
+                    step="0.01"
                     defaultValue={editingInvestment?.currentValue || ''}
-                    className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-amber-100 outline-none font-bold text-slate-700 transition-all" 
-                    placeholder="Quanto vale hoje" 
+                    className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700"
+                    placeholder="Valor hoje"
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Tipo de Ativo</label>
-                <select 
-                  name="type" 
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Tipo de Ativo</label>
+                <select
+                  name="type"
                   defaultValue={editingInvestment?.type || 'Renda Fixa'}
-                  className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 focus:ring-4 focus:ring-amber-100 outline-none font-bold text-slate-700 appearance-none"
+                  className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all appearance-none"
                 >
                   <option value="Cripto">Criptomoedas</option>
                   <option value="Renda Fixa">Renda Fixa</option>
@@ -793,7 +798,7 @@ const App: React.FC = () => {
                   <option value="Outros">Outros</option>
                 </select>
               </div>
-              <button type="submit" className={`w-full ${editingInvestment ? 'bg-indigo-600' : 'bg-amber-500 hover:bg-amber-600'} text-white font-black py-5 rounded-[1.5rem] transition-all mt-4 shadow-xl shadow-amber-100 hover:scale-[1.02] active:scale-95`}>
+              <button type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-black font-semibold py-3 rounded-xl transition-all mt-2">
                 {editingInvestment ? 'Atualizar Ativo' : 'Adicionar Ativo'}
               </button>
             </form>

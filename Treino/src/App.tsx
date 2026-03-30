@@ -122,13 +122,15 @@ useEffect(() => {
         .select('user_id, role')
         .eq('squad_id', squadId)
         .then(async ({ data: membersData }) => {
-          // Busca nomes dos perfis
+          // Busca perfis dos membros
           const userIds = (membersData || []).map((m: any) => m.user_id);
-          const { data: profilesData } = await supabase
-            .from('profiles')
-            .select('id, name')
-            .in('id', userIds);
-          const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p.name]));
+          const [{ data: profilesData }, { data: ownProfile }] = await Promise.all([
+            supabase.from('profiles').select('id, name, avatar_url').in('id', userIds),
+            supabase.from('profiles').select('id, name, avatar_url').eq('id', session.user.id).single(),
+          ]);
+const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
+          // Garante que o próprio usuário sempre aparece com dados corretos
+          if (ownProfile) profileMap.set(ownProfile.id, ownProfile);
 
           // Busca dias do squad
           supabase
@@ -147,8 +149,8 @@ useEffect(() => {
                 inviteCode: squadData.invite_code,
                 members: (membersData || []).map((m: any) => ({
                   id: m.user_id,
-                  name: profileMap.get(m.user_id) || (m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro'),
-                  avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
+                  name: profileMap.get(m.user_id)?.name || (m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro'),
+                  avatar: profileMap.get(m.user_id)?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
                   role: m.role,
                   isOnline: m.user_id === session?.user?.id,
                 })),
@@ -394,7 +396,7 @@ useEffect(() => {
       {/* Sidebar — só aparece em telas md+ */}
       <aside className="hidden md:flex w-64 border-r border-zinc-800 flex-col p-6 gap-8 bg-[#09090b] z-20">
         <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+          <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
             <Dumbbell className="text-white w-6 h-6" />
           </div>
           <h1 className="text-xl font-bold tracking-tight">SquadFit</h1>
@@ -443,16 +445,23 @@ useEffect(() => {
           {/* Header */}
           <header className="flex items-center justify-between mb-6 md:mb-10">
             <div className="flex items-center gap-3">
-              <img
-                src={squad.icon}
-                alt={squad.name}
-                className="w-11 h-11 md:w-16 md:h-16 rounded-2xl object-cover border-2 border-zinc-800 shadow-xl"
-                referrerPolicy="no-referrer"
-              />
+              {squad.icon ? (
+                <img
+                  src={squad.icon}
+                  alt={squad.name}
+                  className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover bg-zinc-800"
+                  referrerPolicy="no-referrer"
+                  onError={e => (e.currentTarget.style.display = 'none')}
+                />
+              ) : (
+                <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500 font-bold text-lg">
+                  {squad.name?.[0]?.toUpperCase() || 'S'}
+                </div>
+              )}
               <div>
-                <h2 className="text-lg md:text-2xl font-bold leading-tight">{squad.name}</h2>
-                <p className="text-zinc-500 text-xs md:text-sm flex items-center gap-1">
-                  <Users size={12} /> {squad.members.length} membros
+                <h2 className="text-base md:text-xl font-bold leading-tight">{squad.name}</h2>
+                <p className="text-zinc-500 text-xs flex items-center gap-1">
+                  <Users size={11} /> {squad.members.length} membros
                 </p>
               </div>
             </div>
@@ -833,6 +842,15 @@ useEffect(() => {
               session={session}
               squad={squad}
               onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
+              onLeaveSquad={() => setSquadId(null)}
+              onProfileUpdate={(name, avatarUrl) => setSquad(prev => ({
+                ...prev,
+                members: prev.members.map(m =>
+                  m.id === session.user.id
+                    ? { ...m, name: name || m.name, avatar: avatarUrl || m.avatar }
+                    : m
+                ),
+              }))}
             />
           )}
         </div>
@@ -921,7 +939,7 @@ useEffect(() => {
                 </button>
                 <button 
                   onClick={() => saveExercise(editingExercise.exercise)}
-                  className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-sm font-bold transition-all shadow-lg shadow-emerald-500/20"
+                  className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-sm font-bold transition-all"
                 >
                   Salvar
                 </button>
@@ -952,10 +970,10 @@ function NavItem({ icon, label, active, onClick }: { icon: ReactNode, label: str
       onClick={onClick}
       className={`
         flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group
-        ${active ? 'bg-zinc-100 text-zinc-900 font-semibold shadow-lg' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'}
+        ${active ? 'bg-zinc-800 text-white font-semibold' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50'}
       `}
     >
-      <span className={`${active ? 'text-zinc-900' : 'text-zinc-500 group-hover:text-zinc-200'}`}>{icon}</span>
+      <span className={`${active ? 'text-emerald-400' : 'text-zinc-500 group-hover:text-zinc-300'}`}>{icon}</span>
       <span className="text-sm">{label}</span>
     </button>
   );
