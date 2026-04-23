@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { supabase } from '../services/supabase';
 
 const APPS = [
-  { id: 'finance', nome: 'Finance', emoji: '💰', url: '/finance/' },
-  { id: 'treino', nome: 'Treino', emoji: '🏋️', url: '/treino/' },
+  { id: 'finance', nome: 'Finance', url: '/finance/' },
+  { id: 'treino', nome: 'Treino', url: '/treino/' },
 ];
 
 interface AppSwitcherProps {
@@ -29,56 +29,51 @@ export function AppSwitcher({ currentApp, userEmail }: AppSwitcherProps) {
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          padding: '7px 12px',
-          borderRadius: 10,
-          background: 'rgba(231,255,94,0.08)',
-          border: '1px solid rgba(231,255,94,0.3)',
-          boxShadow: '0 0 10px rgba(231,255,94,0.1)',
-          color: '#e7ff5e',
+          padding: '6px 12px',
+          borderRadius: 8,
+          background: '#161616',
+          border: '1px solid #1F1F1F',
+          color: '#E8E8E8',
           cursor: 'pointer',
           fontSize: 13,
-          fontWeight: 600,
-          transition: 'all 0.15s',
+          fontWeight: 500,
+          transition: 'border-color 0.15s, background 0.15s',
         }}
         onMouseEnter={e => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(231,255,94,0.15)';
-          (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 16px rgba(231,255,94,0.2)';
+          (e.currentTarget as HTMLButtonElement).style.borderColor = '#2a2a2a';
+          (e.currentTarget as HTMLButtonElement).style.background = '#1a1a1a';
         }}
         onMouseLeave={e => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(231,255,94,0.08)';
-          (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 10px rgba(231,255,94,0.1)';
+          (e.currentTarget as HTMLButtonElement).style.borderColor = '#1F1F1F';
+          (e.currentTarget as HTMLButtonElement).style.background = '#161616';
         }}
       >
-        <span style={{ fontSize: 16 }}>{current.emoji}</span>
         <span>{current.nome}</span>
-        <span style={{ fontSize: 10, opacity: 0.7 }}>▾</span>
+        <span style={{ fontSize: 9, color: '#616161' }}>▾</span>
       </button>
 
       {open && (
         <>
-          <div
-            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-            onClick={() => setOpen(false)}
-          />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => setOpen(false)} />
 
           <div style={{
             position: 'absolute',
-            top: 'calc(100% + 8px)',
+            top: 'calc(100% + 6px)',
             right: 0,
-            background: '#111',
-            border: '1px solid #2a2a2a',
-            borderRadius: 14,
-            padding: 8,
-            minWidth: 210,
-            boxShadow: '0 20px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(231,255,94,0.05)',
+            background: '#111111',
+            border: '1px solid #1F1F1F',
+            borderRadius: 12,
+            padding: 6,
+            minWidth: 200,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
             zIndex: 100,
           }}>
             {userEmail && (
-              <div style={{ padding: '6px 10px 10px', borderBottom: '1px solid #222', marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: '#555', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Conectado como
+              <div style={{ padding: '6px 10px 8px', borderBottom: '1px solid #1a1a1a', marginBottom: 6 }}>
+                <div style={{ fontSize: 10, color: '#3a3a3a', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  Conta
                 </div>
-                <div style={{ fontSize: 13, color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: 12, color: '#616161', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {userEmail}
                 </div>
               </div>
@@ -89,45 +84,49 @@ export function AppSwitcher({ currentApp, userEmail }: AppSwitcherProps) {
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 10,
-                  padding: '10px 12px',
-                  borderRadius: 8,
+                  justifyContent: 'space-between',
+                  padding: '9px 10px',
+                  borderRadius: 7,
                   textDecoration: 'none',
-                  color: '#fff',
-                  fontSize: 14,
+                  color: '#E8E8E8',
+                  fontSize: 13,
                   fontWeight: 500,
                   transition: 'background 0.1s',
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(231,255,94,0.07)'}
+                onMouseEnter={e => e.currentTarget.style.background = '#1a1a1a'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <span style={{ fontSize: 20 }}>{app.emoji}</span>
-                <span>Ir para {app.nome}</span>
-                <span style={{ marginLeft: 'auto', color: '#444' }}>→</span>
+                <span>{app.nome}</span>
+                <span style={{ color: '#3a3a3a', fontSize: 13 }}>→</span>
               </a>
             ))}
 
-            <div style={{ borderTop: '1px solid #222', marginTop: 8, paddingTop: 8 }}>
+            <div style={{ borderTop: '1px solid #1a1a1a', marginTop: 6, paddingTop: 6 }}>
               <button
                 onClick={handleSignOut}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 10,
                   width: '100%',
-                  padding: '10px 12px',
-                  borderRadius: 8,
+                  padding: '9px 10px',
+                  borderRadius: 7,
                   background: 'transparent',
                   border: 'none',
-                  color: '#f87171',
+                  color: '#616161',
                   cursor: 'pointer',
-                  fontSize: 14,
-                  transition: 'background 0.1s',
+                  fontSize: 13,
+                  transition: 'background 0.1s, color 0.1s',
                 }}
-                onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = 'rgba(248,113,113,0.08)'}
-                onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = 'transparent'}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLButtonElement).style.background = 'rgba(248,113,113,0.08)';
+                  (e.currentTarget as HTMLButtonElement).style.color = '#f87171';
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                  (e.currentTarget as HTMLButtonElement).style.color = '#616161';
+                }}
               >
-                🚪 Sair da conta
+                Sair
               </button>
             </div>
           </div>

@@ -1,0 +1,15 @@
+{
+  "name": "kronos",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names \"HUB,FINANCE,TREINO,TODO\" --prefix-colors \"cyan,green,yellow,magenta\" \"npm run dev --prefix hub\" \"npm run dev --prefix Finance\" \"npm run dev --prefix Treino\" \"npm run dev --prefix todolist\"",
+    "dev:hub":     "npm run dev --prefix hub",
+    "dev:finance": "npm run dev --prefix Finance",
+    "dev:treino":  "npm run dev --prefix Treino",
+    "dev:todo":    "npm run dev --prefix todolist",
+    "build": "npm run build --prefix hub && npm run build --prefix Finance && npm run build --prefix Treino && npm run build --prefix todolist"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
