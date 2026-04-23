@@ -45,7 +45,12 @@ const App: React.FC = () => {
   const [showTransModal, setShowTransModal] = useState(false);
   const [showInvModal, setShowInvModal] = useState(false);
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [defaultType, setDefaultType] = useState<"income" | "expense">("expense");
+  const [viewDate, setViewDate] = useState(() => {
+    const n = new Date();
+    return { month: n.getMonth(), year: n.getFullYear() };
+  });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -97,6 +102,7 @@ const App: React.FC = () => {
     const { data: iData, error: iErr } = await supabase
       .from("investments")
       .select("id, name, initial_amount, current_value, type, date")
+      .eq("user_id", session.user.id)
       .order("date", { ascending: false });
 
     if (iErr) {
@@ -115,71 +121,62 @@ const App: React.FC = () => {
   };
 
 
+  // ---- Filtro por mês ----
+  const filteredTransactions = useMemo(() => {
+    const start = new Date(viewDate.year, viewDate.month, 1);
+    const end   = new Date(viewDate.year, viewDate.month + 1, 0, 23, 59, 59);
+    return transactions.filter(t => { const d = new Date(t.date); return d >= start && d <= end; });
+  }, [transactions, viewDate]);
+
+  const prevMonthTransactions = useMemo(() => {
+    const pm = viewDate.month === 0 ? 11 : viewDate.month - 1;
+    const py = viewDate.month === 0 ? viewDate.year - 1 : viewDate.year;
+    const start = new Date(py, pm, 1);
+    const end   = new Date(py, pm + 1, 0, 23, 59, 59);
+    return transactions.filter(t => { const d = new Date(t.date); return d >= start && d <= end; });
+  }, [transactions, viewDate]);
+
+  const monthLabel = new Date(viewDate.year, viewDate.month, 1)
+    .toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+  const goToPrevMonth = () => setViewDate(p =>
+    p.month === 0 ? { month: 11, year: p.year - 1 } : { month: p.month - 1, year: p.year }
+  );
+  const goToNextMonth = () => {
+    const now = new Date();
+    if (viewDate.year === now.getFullYear() && viewDate.month === now.getMonth()) return;
+    setViewDate(p => p.month === 11 ? { month: 0, year: p.year + 1 } : { month: p.month + 1, year: p.year });
+  };
+  const isCurrentMonth = (() => { const n = new Date(); return viewDate.month === n.getMonth() && viewDate.year === n.getFullYear(); })();
+
   // ---- Financial Calculations ----
   const summary = useMemo<DashboardSummary>(() => {
-    const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
-    const startOfCurrentMonth = new Date(currentYear, currentMonth, 1);
-    const startOfLastMonth = new Date(currentYear, currentMonth - 1, 1);
-    const endOfLastMonth = new Date(currentYear, currentMonth, 0);
-
-    const totalIncome = transactions
-      .filter((t) => t.type === TransactionType.INCOME)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    const totalExpenses = transactions
-      .filter((t) => t.type === TransactionType.EXPENSE)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    const monthlyExpenses = transactions
-      .filter((t) => {
-        const d = new Date(t.date);
-        return t.type === TransactionType.EXPENSE && d >= startOfCurrentMonth;
-      })
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    const lastMonthExpenses = transactions
-      .filter((t) => {
-        const d = new Date(t.date);
-        return t.type === TransactionType.EXPENSE && d >= startOfLastMonth && d <= endOfLastMonth;
-      })
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    const trendPercentage =
-      lastMonthExpenses > 0 ? ((monthlyExpenses - lastMonthExpenses) / lastMonthExpenses) * 100 : 0;
-
-    const totalInvested = investments.reduce((acc, curr) => acc + curr.initialAmount, 0);
-    const totalCurrentValue = investments.reduce((acc, curr) => acc + curr.currentValue, 0);
-    const totalProfit = totalCurrentValue - totalInvested;
-    const profitPercentage = totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
+    const totalIncome    = filteredTransactions.filter(t => t.type === TransactionType.INCOME).reduce((a, c) => a + c.amount, 0);
+    const totalExpenses  = filteredTransactions.filter(t => t.type === TransactionType.EXPENSE).reduce((a, c) => a + c.amount, 0);
+    const prevExpenses   = prevMonthTransactions.filter(t => t.type === TransactionType.EXPENSE).reduce((a, c) => a + c.amount, 0);
+    const trendPct       = prevExpenses > 0 ? ((totalExpenses - prevExpenses) / prevExpenses) * 100 : 0;
+    const totalInvested  = investments.reduce((a, c) => a + c.initialAmount, 0);
+    const totalCurrentValue = investments.reduce((a, c) => a + c.currentValue, 0);
+    const totalProfit    = totalCurrentValue - totalInvested;
 
     return {
-      totalIncome,
-      totalExpenses,
-      totalInvested,
-      totalCurrentValue,
-      totalProfit,
-      profitPercentage,
+      totalIncome, totalExpenses,
+      totalInvested, totalCurrentValue, totalProfit,
+      profitPercentage: totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0,
       balance: totalIncome - totalExpenses,
-      monthlyExpenses,
-      monthlyTrend: {
-        value: `${Math.abs(trendPercentage).toFixed(0)}%`,
-        isUp: trendPercentage > 0,
-      },
+      monthlyExpenses: totalExpenses,
+      monthlyTrend: { value: `${Math.abs(trendPct).toFixed(0)}%`, isUp: trendPct > 0 },
     };
-  }, [transactions, investments]);
+  }, [filteredTransactions, prevMonthTransactions, investments]);
 
   const chartData = useMemo(() => {
     const groups: Record<string, number> = {};
-    transactions.forEach((t) => {
-      if (t.type === TransactionType.EXPENSE) {
+    filteredTransactions.forEach(t => {
+      if (t.type === TransactionType.EXPENSE)
         groups[t.category] = (groups[t.category] || 0) + t.amount;
-      }
     });
     return Object.entries(groups).map(([name, value]) => ({ name, value }));
-  }, [transactions]);
+  }, [filteredTransactions]);
 
   const investmentChartData = useMemo(() => {
     return investments.map((inv) => ({ name: inv.name, value: inv.currentValue }));
@@ -187,48 +184,45 @@ const App: React.FC = () => {
 
   // ---- Handlers ----
   const handleAddTransaction = async (e: React.FormEvent<HTMLFormElement>) => {
-  e.preventDefault();
-  const formData = new FormData(e.currentTarget);
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const desc     = formData.get("description") as string;
+    const amount   = Math.abs(Number(formData.get("amount")));
+    const category = defaultType === "expense" ? (formData.get("category") as string) : "Receitas";
 
-  const payload = {
-    user_id: session.user.id,
-    title: formData.get("description") as string,
-    amount: Math.abs(Number(formData.get("amount"))),
-    type: defaultType,
-    category: defaultType === "expense"
-      ? (formData.get("category") as string)
-      : "Receitas",
+    if (editingTransaction) {
+      // ---- Editar existente ----
+      const { data, error } = await supabase
+        .from("transactions")
+        .update({ title: desc, amount, type: defaultType, category })
+        .eq("id", editingTransaction.id)
+        .select("id, title, amount, type, category, created_at")
+        .single();
+      if (error) { alert("Erro ao editar transação."); return; }
+      setTransactions(prev => prev.map(t => t.id === data.id ? {
+        id: data.id, description: data.title, amount: Number(data.amount),
+        type: data.type === "income" ? TransactionType.INCOME : TransactionType.EXPENSE,
+        category: data.category, date: data.created_at,
+      } : t));
+      setEditingTransaction(null);
+    } else {
+      // ---- Nova transação ----
+      const { data, error } = await supabase
+        .from("transactions")
+        .insert({ user_id: session.user.id, title: desc, amount, type: defaultType, category })
+        .select("id, title, amount, type, category, created_at")
+        .single();
+      if (error) { alert("Erro ao salvar transação."); return; }
+      setTransactions(prev => [{
+        id: data.id, description: data.title, amount: Number(data.amount),
+        type: data.type === "income" ? TransactionType.INCOME : TransactionType.EXPENSE,
+        category: data.category, date: data.created_at,
+      }, ...prev]);
+    }
+
+    setShowTransModal(false);
+    (e.currentTarget as HTMLFormElement).reset();
   };
-
-  const { data, error } = await supabase
-    .from("transactions")
-    .insert(payload)
-    .select("id, title, amount, type, category, created_at")
-    .single();
-
-  if (error) {
-    console.error(error.message);
-    alert("Erro ao salvar transação: " + error.message);
-    return;
-  }
-
-  // 👇 MAPEAMENTO CORRETO PARA O FRONTEND
-  const mapped: Transaction = {
-    id: data.id,
-    description: data.title,
-    amount: Number(data.amount),
-    type:
-      data.type === "income"
-        ? TransactionType.INCOME
-        : TransactionType.EXPENSE,
-    category: data.category,
-    date: data.created_at,
-  };
-
-  setTransactions((prev) => [mapped, ...prev]);
-  setShowTransModal(false);
-  (e.currentTarget as HTMLFormElement).reset();
-};
 
   const handleCloseInvModal = () => {
     setShowInvModal(false);
@@ -256,7 +250,7 @@ const App: React.FC = () => {
         .single();
 
       if (error) {
-        alert("Erro ao atualizar: " + error.message);
+        alert("Erro ao atualizar investimento.");
         return;
       }
 
@@ -278,7 +272,7 @@ const App: React.FC = () => {
         .single();
 
       if (error) {
-        alert("Erro ao salvar investimento: " + error.message);
+        alert("Erro ao salvar investimento.");
         return;
       }
 
@@ -335,12 +329,12 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen pb-20 bg-[#0A0A0A] flex flex-col gap-6">
+    <div className="min-h-screen pb-20 bg-[#0A0A0A] flex flex-col">
       {/* Navigation */}
-      <header className="sticky top-0 z-40 backdrop-blur-md border-b border-[#232323] bg-[#0A0A0A]/80">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+      <header className="sticky top-0 z-40 backdrop-blur-sm border-b border-[#1F1F1F] bg-[#0A0A0A]/90">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <h1 className="font-bold tracking-tight text-white text-base md:text-xl">Finance</h1>
+            <h1 className="font-semibold text-[#E8E8E8] text-sm tracking-wide">Finance</h1>
           </div>
           <div className="flex items-center gap-3">
 
@@ -370,68 +364,65 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-8 py-4 md:py-8">
+      <main className="max-w-7xl mx-auto px-4 md:px-8 py-6 md:py-10">
         {/* Top Summary Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 md:gap-6 mb-6 md:mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-8">
           <DashboardCard
             title="Ganho Total"
             value={`R$ ${summary.totalIncome.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<TrendingUp className="w-5 h-5 text-emerald-500" />}
-            colorClass="bg-emerald-500/10 border-emerald-500/20"
-            trend={{ value: '12%', isUp: true, }}
+            icon={<TrendingUp size={16} />}
+            accentColor="#4ade80"
+            trend={{ value: `${((summary.totalIncome / (summary.totalIncome + summary.totalExpenses || 1)) * 100).toFixed(0)}%`, isUp: true }}
           />
           <DashboardCard
             title="Gastos Totais"
             value={`R$ ${summary.totalExpenses.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<TrendingDown className="w-5 h-5 text-red-400" />}
-            colorClass="bg-red-500/10 border-red-500/20"
-            trend={{ value: '5%', isUp: false }}
+            icon={<TrendingDown size={16} />}
+            accentColor="#f87171"
+            trend={{ value: summary.monthlyTrend.value, isUp: summary.monthlyTrend.isUp }}
           />
           <DashboardCard
-            title="Saldo Total"
+            title="Saldo"
             value={`R$ ${summary.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
-            icon={<CircleDollarSign className="w-5 h-5 text-indigo-400" />}
-            colorClass="bg-indigo-500/10 border-indigo-500/20"
+            icon={<CircleDollarSign size={16} />}
+            accentColor="#38bdf8"
           />
           <DashboardCard
             title="Total Investido"
             value={formatCurrency(summary.totalInvested)}
-            icon={<CircleDollarSign className="w-5 h-5 text-amber-400" />}
-            colorClass="bg-amber-500/10 border-amber-500/20"
-            subtitle="Custo de Aquisição"
+            icon={<BarChart3 size={16} />}
+            accentColor="#fbbf24"
+            subtitle="Custo de aquisição"
           />
           <DashboardCard
-            title="Patrimônio Atual"
+            title="Patrimônio"
             value={formatCurrency(summary.totalCurrentValue)}
-            icon={<PieChartIcon className="w-5 h-5 text-violet-400" />}
-            colorClass="bg-violet-500/10 border-violet-500/20"
-            trend={{
-              value: `${summary.profitPercentage.toFixed(1)}%`,
-              isUp: summary.totalProfit >= 0
-            }}
+            icon={<PieChartIcon size={16} />}
+            accentColor="#a78bfa"
+            trend={{ value: `${summary.profitPercentage.toFixed(1)}%`, isUp: summary.totalProfit >= 0 }}
             subtitle="Valor de mercado"
           />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 ">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Column Left: Main Content */}
-          <div className="lg:col-span-2 space-y-8 ">
+          <div className="lg:col-span-2 space-y-6">
 
             {/* Expenses Analysis */}
-            <div className="p-4 md:p-8 rounded-[2rem] border border-[#262626] shadow-sm bg-[#111111]">
-              <div className="flex items-center justify-between mb-8">
+            <div className="p-5 md:p-6 rounded-xl border border-[#1F1F1F] bg-[#111111]">
+              <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h3 className="text-xl font-bold text-slate-800 text-[#F5F5F5]">Distribuição de Gastos</h3>
-                  <p className="text-sm text-slate-400 text-[#A3A3A3]">Visão por categorias de despesas</p>
+                  <h3 className="text-sm font-semibold text-[#E8E8E8]">Distribuição de Gastos</h3>
+                  <p className="text-xs text-[#616161] mt-0.5">Por categoria</p>
                 </div>
               </div>
-              <div className="h-[300px] ">
+              <div className="h-[260px]">
                 {chartData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={300}>
+                  <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11, fontWeight: 600}} dy={10} />
-                      <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11, fontWeight: 600}} />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1F1F1F" />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#616161', fontSize: 11}} dy={10} />
+                      <YAxis axisLine={false} tickLine={false} tick={{fill: '#616161', fontSize: 11}} />
                       <Tooltip 
                         contentStyle={{
                         backgroundColor: "#111111",
@@ -455,107 +446,128 @@ const App: React.FC = () => {
                     </BarChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-300">
-                    <PieChartIcon className="w-16 h-16 mb-4 opacity-20" />
-                    <p className="font-semibold text-[#A3A3A3]">Nenhum dado para exibir</p>
+                  <div className="h-full flex flex-col items-center justify-center gap-2">
+                    <PieChartIcon className="w-8 h-8 text-[#2a2a2a]" />
+                    <p className="text-sm text-[#616161]">Nenhum dado ainda</p>
                   </div>
                 )}
               </div>
             </div>
 
             {/* Transactions Table */}
-            <div className="rounded-[2rem] border border-[#262626] shadow-sm overflow-hidden bg-[#111111]">
-              <div className="p-4 md:p-8 border-b border-[#262626] flex items-center justify-between">
+            <div className="rounded-xl border border-[#1F1F1F] overflow-hidden bg-[#111111]">
+              <div className="px-5 py-4 border-b border-[#1F1F1F] flex items-center justify-between">
                 <div>
-                  <h3 className="text-lg md:text-xl font-bold text-[#F5F5F5]">Atividade Recente</h3>
-                  <p className="text-sm text-[#A3A3A3]">{transactions.length} registros no período</p>
+                  <h3 className="text-sm font-semibold text-[#E8E8E8]">Transações</h3>
+                  <p className="text-xs text-[#616161] mt-0.5">{filteredTransactions.length} registros</p>
+                </div>
+                {/* Month navigation */}
+                <div className="flex items-center gap-2">
+                  <button onClick={goToPrevMonth} className="p-1.5 rounded-lg text-[#616161] hover:text-[#E8E8E8] hover:bg-[#1a1a1a] transition-all">‹</button>
+                  <span className="text-xs font-medium text-[#E8E8E8] capitalize min-w-[110px] text-center">{monthLabel}</span>
+                  <button onClick={goToNextMonth} disabled={isCurrentMonth} className="p-1.5 rounded-lg text-[#616161] hover:text-[#E8E8E8] hover:bg-[#1a1a1a] transition-all disabled:opacity-30 disabled:cursor-not-allowed">›</button>
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
+              {/* Mobile: card list */}
+              <div className="md:hidden divide-y divide-[#1a1a1a]">
+                {filteredTransactions.map((t) => (
+                  <div key={t.id} className="px-4 py-3 flex items-center gap-3 group hover:bg-[#161616] transition-colors">
+                    <div className={`w-1.5 h-8 rounded-full flex-shrink-0 ${t.type === TransactionType.INCOME ? 'bg-green-400/60' : 'bg-rose-400/60'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-[#E8E8E8] truncate">{t.description}</p>
+                      <p className="text-[10px] text-[#616161] mt-0.5">{t.category} · {new Date(t.date).toLocaleDateString('pt-BR')}</p>
+                    </div>
+                    <span className={`text-sm font-semibold tabular-nums flex-shrink-0 ${t.type === TransactionType.INCOME ? 'text-green-400' : 'text-rose-400'}`}>
+                      {t.type === TransactionType.INCOME ? '+' : '-'}{formatCurrency(t.amount)}
+                    </span>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <button className="p-1.5 rounded-lg text-[#3a3a3a] hover:text-blue-400 hover:bg-blue-400/10 transition-all"
+                        onClick={() => { setEditingTransaction(t); setDefaultType(t.type === TransactionType.INCOME ? 'income' : 'expense'); setShowTransModal(true); }}>
+                        <Edit2 size={13} />
+                      </button>
+                      <button className="p-1.5 rounded-lg text-[#3a3a3a] hover:text-rose-400 hover:bg-rose-400/10 transition-all"
+                        onClick={async () => {
+                          const { error } = await supabase.from("transactions").delete().eq("id", t.id).eq("user_id", session.user.id);
+                          if (error) { alert("Erro ao remover transação."); return; }
+                          setTransactions(prev => prev.filter(item => item.id !== t.id));
+                        }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {filteredTransactions.length === 0 && (
+                  <div className="py-12 text-center text-[#616161] text-sm">Nenhuma transação neste mês.</div>
+                )}
+              </div>
+
+              {/* Desktop: table */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left">
-                  <thead className="bg-[#111111] border-b border-[#262626] text-[#A3A3A3] text-[10px] font-bold uppercase tracking-wider">
+                  <thead className="border-b border-[#1F1F1F] text-[#616161] text-[10px] font-medium uppercase tracking-wider">
                     <tr>
-                      <th className="px-3 md:px-8 py-3 md:py-4">Descrição</th>
-                      <th className="px-3 md:px-8 py-3 md:py-4 hidden md:table-cell">Categoria</th>
-                      <th className="px-3 md:px-8 py-3 md:py-4 text-right">Valor</th>
-                      <th className="px-3 md:px-8 py-3 md:py-4 text-center">Ações</th>
+                      <th className="px-5 py-3">Descrição</th>
+                      <th className="px-5 py-3">Categoria</th>
+                      <th className="px-5 py-3 text-right">Valor</th>
+                      <th className="px-5 py-3 text-center">Ações</th>
                     </tr>
                   </thead>
 
-                  <tbody className="divide-y divide-[#262626]">
-                    {transactions.map((t) => (
+                  <tbody className="divide-y divide-[#1a1a1a]">
+                    {filteredTransactions.map((t) => (
                       <tr key={t.id} className="hover:bg-[#161616] transition-colors group">
-                        <td className="px-3 md:px-8 py-3 md:py-5">
-                          <div className="flex items-center gap-2 md:gap-4">
-                            <div
-                              className={`p-2 rounded-lg ${
-                                t.type === TransactionType.INCOME
-                                  ? "bg-emerald-500/10 text-emerald-400"
-                                  : "bg-red-500/10 text-red-400"
-                              }`}
-                            >
-                              {t.type === TransactionType.INCOME ? (
-                                <ArrowUpRight size={18} className="text-current" />
-                              ) : (
-                                <ArrowDownLeft size={18} className="text-current" />
-                              )}
-                            </div>
-
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-1.5 h-7 rounded-full flex-shrink-0 ${t.type === TransactionType.INCOME ? 'bg-green-400/60' : 'bg-rose-400/60'}`} />
                             <div>
-                              <p className="font-bold text-[#F5F5F5]">{t.description}</p>
-                              <p className="text-[10px] text-[#A3A3A3] font-medium">
-                                {new Date(t.date).toLocaleDateString()}
+                              <p className="text-sm font-medium text-[#E8E8E8]">{t.description}</p>
+                              <p className="text-xs text-[#616161] mt-0.5">
+                                {new Date(t.date).toLocaleDateString('pt-BR')}
                               </p>
                             </div>
                           </div>
                         </td>
 
-                        <td className="px-3 md:px-8 py-3 md:py-5 hidden md:table-cell">
-                          <span className="px-3 py-1 rounded-full bg-[#1A1A1A] border border-[#2E2E2E] text-[#CFCFCF] text-[10px] font-extrabold uppercase tracking-tighter">
+                        <td className="px-5 py-4">
+                          <span className="px-2.5 py-1 rounded-md bg-[#1a1a1a] text-[#616161] text-[10px] font-medium uppercase tracking-wide">
                             {t.category}
                           </span>
                         </td>
 
-                        <td
-                          className={`px-3 md:px-8 py-3 md:py-5 text-right font-semibold text-sm md:text-base ${
-                            t.type === TransactionType.INCOME
-                              ? "text-emerald-400"
-                              : "text-red-400"
-                          }`}
-                        >
-                          {t.type === TransactionType.INCOME ? "+" : "-"} {formatCurrency(t.amount)}
+                        <td className={`px-5 py-4 text-right text-sm font-semibold tabular-nums ${
+                          t.type === TransactionType.INCOME ? 'text-green-400' : 'text-rose-400'
+                        }`}>
+                          {t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}
                         </td>
 
-                        <td className="px-3 md:px-8 py-3 md:py-5 text-center">
-                          <button
-                            className="p-2 rounded-lg text-[#A3A3A3] hover:text-[#FF3131] hover:bg-[#FF3131]/10 transition-all"
-                            onClick={async () => {
-                              const { error } = await supabase
-                                .from("transactions")
-                                .delete()
-                                .eq("id", t.id);
-
-                              if (error) {
-                                alert("Erro ao deletar: " + error.message);
-                                return;
-                              }
-
-                              setTransactions((prev) =>
-                                prev.filter((item) => item.id !== t.id)
-                              );
-                            }}
-                          >
-                            <Trash2 size={18} />
-                          </button>
+                        <td className="px-5 py-4 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              className="p-1.5 rounded-lg text-transparent group-hover:text-[#3a3a3a] hover:!text-blue-400 hover:bg-blue-400/10 transition-all"
+                              onClick={() => { setEditingTransaction(t); setDefaultType(t.type === TransactionType.INCOME ? 'income' : 'expense'); setShowTransModal(true); }}
+                            >
+                              <Edit2 size={15} />
+                            </button>
+                            <button
+                              className="p-1.5 rounded-lg text-transparent group-hover:text-[#3a3a3a] hover:!text-rose-400 hover:bg-rose-400/10 transition-all"
+                              onClick={async () => {
+                                const { error } = await supabase.from("transactions").delete().eq("id", t.id).eq("user_id", session.user.id);
+                                if (error) { alert("Erro ao remover transação."); return; }
+                                setTransactions((prev) => prev.filter((item) => item.id !== t.id));
+                              }}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
 
-                    {transactions.length === 0 && (
+                    {filteredTransactions.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="p-12 text-center text-[#666666] font-medium">
-                          Nenhuma transação registrada.
+                        <td colSpan={4} className="py-16 text-center text-[#616161] text-sm">
+                          Nenhuma transação neste mês.
                         </td>
                       </tr>
                     )}
@@ -566,22 +578,22 @@ const App: React.FC = () => {
           </div>
 
           {/* Column Right: Investments Portfolio */}
-          <div className="space-y-8 ">
-            <div className="bg-[#111111] p-4 md:p-8 rounded-[2rem] border border-[#262626] shadow-sm">
-              <div className="flex items-center justify-between mb-8">
+          <div className="space-y-6">
+            <div className="bg-[#111111] p-5 rounded-xl border border-[#1F1F1F]">
+              <div className="flex items-center justify-between mb-5">
                 <div>
-                  <h3 className="text-xl font-bold text-[#F5F5F5]">Portfólio</h3>
-                  <p className="text-sm text-[#A3A3A3]">Rentabilidade de ativos</p>
+                  <h3 className="text-sm font-semibold text-[#E8E8E8]">Portfólio</h3>
+                  <p className="text-xs text-[#616161] mt-0.5">Rentabilidade de ativos</p>
                 </div>
                 <button
                   onClick={() => setShowInvModal(true)}
-                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 p-2 rounded-lg transition-all"
+                  className="bg-[#1a1a1a] hover:bg-[#222] text-[#616161] hover:text-[#E8E8E8] p-1.5 rounded-lg transition-all"
                 >
                   <Plus size={20} />
                 </button>
               </div>
 
-              <div className="space-y-5 ">
+              <div className="space-y-3">
                 {investments.map((inv) => {
                   const profit = inv.currentValue - inv.initialAmount;
                   const profitPerc = (profit / inv.initialAmount) * 100;
@@ -590,16 +602,14 @@ const App: React.FC = () => {
                   return (
                     <div
                       key={inv.id}
-                      className="group bg-[#111111] p-5 rounded-2xl border border-[#262626] transition-all shadow-sm hover:border-[#3a3a3a]"
+                      className="group p-4 rounded-xl border border-[#1F1F1F] hover:border-[#2a2a2a] bg-[#0e0e0e] transition-all"
                     >
-                      <div className="flex justify-between items-start mb-4">
-                        
+                      <div className="flex justify-between items-start mb-3">
                         <div>
-                          <p className="text-xs font-black text-[#F5F5F5] uppercase tracking-widest mb-1">
+                          <p className="text-[10px] font-medium text-[#616161] uppercase tracking-widest mb-0.5">
                             {inv.type}
                           </p>
-
-                          <h4 className="font-bold text-[#A3A3A3] text-lg">
+                          <h4 className="font-medium text-[#E8E8E8] text-sm">
                             {inv.name}
                           </h4>
                         </div>
@@ -623,10 +633,11 @@ const App: React.FC = () => {
                               const { error } = await supabase
                                 .from("investments")
                                 .delete()
-                                .eq("id", inv.id);
+                                .eq("id", inv.id)
+                                .eq("user_id", session.user.id);
 
                               if (error) {
-                                alert("Erro ao deletar: " + error.message);
+                                alert("Erro ao remover investimento.");
                                 return;
                               }
 
@@ -640,18 +651,18 @@ const App: React.FC = () => {
                         </div>
                       </div>
                       
-                      <div className="grid grid-cols-2 gap-4 mb-4 " >
+                      <div className="grid grid-cols-2 gap-3 mb-3">
                         <div>
-                          <p className="text-[10px] font-bold text-[#F5F5F5] uppercase">Investido</p>
-                          <p className="font-bold text-[#A3A3A3]">{formatCurrency(inv.initialAmount)}</p>
+                          <p className="text-[10px] text-[#616161] mb-0.5">Investido</p>
+                          <p className="text-sm font-medium text-[#E8E8E8]">{formatCurrency(inv.initialAmount)}</p>
                         </div>
                         <div className="text-right">
-                          <p className="text-[10px] font-bold text-[#F5F5F5] uppercase">Valor Atual</p>
-                          <p className="font-black text-[#A3A3A3]">{formatCurrency(inv.currentValue)}</p>
+                          <p className="text-[10px] text-[#616161] mb-0.5">Atual</p>
+                          <p className="text-sm font-medium text-[#E8E8E8]">{formatCurrency(inv.currentValue)}</p>
                         </div>
                       </div>
 
-                      <div className={`flex items-center justify-between p-3 rounded-xl ${isPositive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                      <div className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs ${isPositive ? 'bg-green-400/10 text-green-400' : 'bg-rose-400/10 text-rose-400'}`}>
                         <div className="flex items-center gap-1.5">
                           {isPositive ? <TrendingUp size={14} /> : <TrendingDown size={14}  />}
                           <span className="text-sm font-black">{isPositive ? '+' : ''}{profitPerc.toFixed(1)}%</span>
@@ -702,23 +713,24 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="bg-[#111111] rounded-2xl w-full max-w-md border border-[#262626] overflow-hidden">
             <div className="p-6 border-b border-[#262626] flex justify-between items-center">
-              <h3 className="text-lg font-bold text-[#F5F5F5]">Nova Transação</h3>
-              <button onClick={() => setShowTransModal(false)} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">✕</button>
+              <h3 className="text-lg font-bold text-[#F5F5F5]">{editingTransaction ? 'Editar Transação' : 'Nova Transação'}</h3>
+              <button onClick={() => { setShowTransModal(false); setEditingTransaction(null); }} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">✕</button>
             </div>
             <form onSubmit={handleAddTransaction} className="p-6 space-y-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Descrição</label>
-                <input required name="description" type="text" className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="Ex: Aluguel, Mercado, Salário..." />
+                <input required name="description" type="text" defaultValue={editingTransaction?.description || ''} className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="Ex: Aluguel, Mercado, Salário..." />
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Valor (R$)</label>
-                <input required name="amount" type="number" step="0.01" className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="0.00" />
+                <input required name="amount" type="number" step="0.01" defaultValue={editingTransaction?.amount || ''} className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all placeholder:text-zinc-700" placeholder="0.00" />
               </div>
               {defaultType === "expense" && (
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Categoria</label>
                   <select
                     name="category"
+                    defaultValue={editingTransaction?.category || 'Alimentação'}
                     className="w-full bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3 outline-none text-[#F5F5F5] focus:border-zinc-500 transition-all appearance-none"
                   >
                     <option value="Alimentação">Alimentação</option>
@@ -731,7 +743,7 @@ const App: React.FC = () => {
                 </div>
               )}
               <button type="submit" className={`w-full ${defaultType === 'income' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'} text-white font-semibold py-3 rounded-xl transition-all mt-2`}>
-                Confirmar
+                {editingTransaction ? 'Salvar' : 'Confirmar'}
               </button>
             </form>
           </div>

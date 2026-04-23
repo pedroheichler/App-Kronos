@@ -8,6 +8,100 @@ interface SettingsProps {
   onSquadUpdate: (name: string, icon: string) => void;
   onProfileUpdate: (name: string, avatarUrl: string) => void;
   onLeaveSquad: () => void;
+  onSquadJoined?: () => void;
+}
+
+function gerarCodigo() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function SquadSetup({ userId, onComplete }: { userId: string; onComplete: () => void }) {
+  const [modo, setModo] = useState<'escolha' | 'criar' | 'entrar'>('escolha');
+  const [nome, setNome] = useState('');
+  const [codigo, setCodigo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState('');
+
+  const criarSquad = async () => {
+    if (!nome.trim()) { setErro('Digite um nome para o squad'); return; }
+    setLoading(true); setErro('');
+    const inviteCode = gerarCodigo();
+    const { data: squad, error: squadErr } = await supabase
+      .from('squads').insert({ name: nome, created_by: userId, invite_code: inviteCode }).select('id').single();
+    if (squadErr) { setErro('Erro: ' + squadErr.message); setLoading(false); return; }
+    const { error: memberErr } = await supabase
+      .from('squad_members').insert({ squad_id: squad.id, user_id: userId, role: 'admin' });
+    if (memberErr) { setErro('Erro: ' + memberErr.message); setLoading(false); return; }
+    const dias = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+    await supabase.from('workout_days').insert(dias.map((name, i) => ({ squad_id: squad.id, name, day_order: i })));
+    setLoading(false);
+    onComplete();
+  };
+
+  const entrarSquad = async () => {
+    if (!codigo.trim()) { setErro('Digite o código do squad'); return; }
+    setLoading(true); setErro('');
+    const { data: squad, error: squadErr } = await supabase
+      .from('squads').select('id').eq('invite_code', codigo.toUpperCase()).single();
+    if (squadErr || !squad) { setErro('Código inválido. Verifique e tente novamente.'); setLoading(false); return; }
+    const { error: memberErr } = await supabase
+      .from('squad_members').insert({ squad_id: squad.id, user_id: userId, role: 'member' });
+    if (memberErr) { setErro('Você já está nesse squad ou ocorreu um erro.'); setLoading(false); return; }
+    setLoading(false);
+    onComplete();
+  };
+
+  return (
+    <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8 max-w-md">
+      <h2 className="text-xl font-bold text-zinc-100 mb-2">Entrar em um Squad</h2>
+      <p className="text-sm text-zinc-500 mb-6">Crie um squad novo ou entre num existente com código de convite.</p>
+
+      {modo === 'escolha' && (
+        <div className="flex flex-col gap-3">
+          <button onClick={() => setModo('criar')}
+            className="p-5 bg-[#111] border border-[#222] hover:border-emerald-500 rounded-xl text-left transition-colors"
+          >
+            <div className="text-sm font-semibold text-white mb-1">💪 Criar um novo squad</div>
+            <div className="text-xs text-zinc-500">Você será o admin e poderá convidar membros</div>
+          </button>
+          <button onClick={() => setModo('entrar')}
+            className="p-5 bg-[#111] border border-[#222] hover:border-emerald-500 rounded-xl text-left transition-colors"
+          >
+            <div className="text-sm font-semibold text-white mb-1">🔑 Entrar em um squad</div>
+            <div className="text-xs text-zinc-500">Use o código de convite que recebeu</div>
+          </button>
+        </div>
+      )}
+
+      {modo === 'criar' && (
+        <div>
+          <button onClick={() => { setModo('escolha'); setErro(''); }} className="text-xs text-zinc-500 hover:text-zinc-300 mb-4 block">← Voltar</button>
+          <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Nome do squad</label>
+          <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Ex: Os Brutos do CT"
+            className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm text-white outline-none focus:ring-2 focus:ring-emerald-500 mb-4" />
+          {erro && <p className="text-red-400 text-xs mb-3">{erro}</p>}
+          <button onClick={criarSquad} disabled={loading}
+            className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white py-3 rounded-xl text-sm font-semibold transition-all">
+            {loading ? 'Criando...' : 'Criar Squad'}
+          </button>
+        </div>
+      )}
+
+      {modo === 'entrar' && (
+        <div>
+          <button onClick={() => { setModo('escolha'); setErro(''); }} className="text-xs text-zinc-500 hover:text-zinc-300 mb-4 block">← Voltar</button>
+          <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Código de convite</label>
+          <input value={codigo} onChange={e => setCodigo(e.target.value)} placeholder="Ex: ABC123"
+            className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm text-white outline-none focus:ring-2 focus:ring-emerald-500 mb-4 uppercase tracking-widest" />
+          {erro && <p className="text-red-400 text-xs mb-3">{erro}</p>}
+          <button onClick={entrarSquad} disabled={loading}
+            className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white py-3 rounded-xl text-sm font-semibold transition-all">
+            {loading ? 'Entrando...' : 'Entrar no Squad'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -16,8 +110,9 @@ function publicUrl(bucket: string, path: string) {
   return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`;
 }
 
-export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLeaveSquad }: SettingsProps) {
+export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLeaveSquad, onSquadJoined }: SettingsProps) {
   const isAdmin = squad.members.find(m => m.id === session?.user?.id)?.role === 'admin';
+  const hasSquad = !!squad.id;
 
   // Perfil
   const [displayName, setDisplayName] = useState('');
@@ -80,7 +175,7 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
       .from('profiles')
       .upsert({ id: session.user.id, name: displayName }, { onConflict: 'id' });
     if (error) {
-      alert('Erro ao salvar: ' + error.message);
+      alert('Erro ao salvar configurações.');
       setProfileStatus('error');
       setTimeout(() => setProfileStatus('idle'), 3000);
       return;
@@ -103,6 +198,11 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
 
   return (
     <div className="space-y-6 max-w-2xl">
+
+      {/* Squad Setup — quando ainda não tem squad */}
+      {!hasSquad && onSquadJoined && (
+        <SquadSetup userId={session.user.id} onComplete={onSquadJoined} />
+      )}
 
       {/* Meu Perfil */}
       <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8">
@@ -178,8 +278,8 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
         </div>
       </div>
 
-      {/* Squad — só para admin */}
-      {isAdmin && (
+      {/* Squad — só para admin e quando tem squad */}
+      {hasSquad && isAdmin && (
         <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8">
           <h2 className="text-xl font-bold text-zinc-100 mb-6">Configurações do Squad</h2>
 
@@ -246,8 +346,8 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
         </div>
       )}
 
-      {/* Zona de Perigo */}
-      <div className="bg-zinc-900/50 border border-red-900/40 rounded-3xl p-8">
+      {/* Zona de Perigo — só quando tem squad */}
+      {hasSquad && <div className="bg-zinc-900/50 border border-red-900/40 rounded-3xl p-8">
         <h2 className="text-xl font-bold text-zinc-100 mb-2">Zona de Perigo</h2>
         <p className="text-zinc-500 text-sm mb-6">Ações irreversíveis relacionadas ao seu squad.</p>
 
@@ -264,7 +364,7 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
                 .delete()
                 .eq('user_id', session.user.id)
                 .eq('squad_id', squad.id);
-              if (error) { alert('Erro ao sair: ' + error.message); return; }
+              if (error) { alert('Erro ao sair do squad.'); return; }
               onLeaveSquad();
             }}
             className="ml-6 shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 px-5 py-2 rounded-xl text-sm font-semibold transition-all"
@@ -272,7 +372,7 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
             Sair do squad
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

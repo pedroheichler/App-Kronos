@@ -4,33 +4,83 @@ import {
   addExercise as addExerciseToDB,
   saveExercise as saveExerciseToDB,
   deleteExercise as deleteExerciseFromDB,
-  fetchExercisesByDay,
 } from './services/exercises';
-import { 
-  LayoutDashboard, 
-  Calendar, 
-  Users, 
-  TrendingUp, 
+import {
+  LayoutDashboard,
+  Calendar,
+  Users,
+  TrendingUp,
   Settings as SettingsIcon,
-  Plus, 
+  Plus,
   CheckCircle2,
-  Circle, 
-  Clock, 
-  ChevronRight,
-  UserPlus,
   Trash2,
   Copy,
   Edit3,
   RotateCcw,
   Dumbbell,
-  Info
 } from 'lucide-react';
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
-import { Squad, ViewType, DayPlan, Exercise } from './types';
-import { Onboarding } from './components/Onboarding';
+import { Squad, ViewType, Exercise } from './types';
 import { Settings } from './components/Settings';
 
+
+// Retorna "YYYY-MM-DD" no fuso local (evita bug UTC-3 após 21h)
+function localDateStr(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Calcula sequência de treinos consecutivos respeitando dias de descanso.
+// trainingDays: índices dos dias com treino (Seg=0…Dom=6). Vazio = todos os dias contam.
+function calcStreak(dates: string[], trainingDays: number[] = []): number {
+  if (!dates.length) return 0;
+
+  const doneSet  = new Set(dates);
+  const allDays  = trainingDays.length === 0;
+  const todayStr = localDateStr();
+
+  let streak = 0;
+  let d = new Date();
+
+  for (let i = 0; i < 400; i++) {
+    const dateStr  = localDateStr(d);
+    const dow      = (d.getDay() + 6) % 7; // JS Dom=0 → converte para Seg=0
+
+    if (!allDays && !trainingDays.includes(dow)) {
+      // Dia de descanso — não conta nem quebra a sequência
+      d.setDate(d.getDate() - 1);
+      continue;
+    }
+
+    if (doneSet.has(dateStr)) {
+      streak++;
+    } else if (dateStr !== todayStr) {
+      break; // Dia de treino passado perdido → sequência quebrada
+    }
+    // Se for hoje e não treinou ainda → não penaliza, continua contando para trás
+
+    d.setDate(d.getDate() - 1);
+  }
+
+  return streak;
+}
+
+function getStreakStyle(days: number): { color: string; badge: string } {
+  if (days >= 60) return { color: '#ffd700', badge: '60 dias 🏆' };
+  if (days >= 45) return { color: '#8b5cf6', badge: '45 dias ⚡' };
+  if (days >= 30) return { color: '#ef4444', badge: '30 dias 💪' };
+  if (days >= 15) return { color: '#f97316', badge: '15 dias 🔥' };
+  if (days >= 7)  return { color: '#fbbf24', badge: '7 dias 🏅' };
+  return { color: '#E8E8E8', badge: '' };
+}
+
+function parseRestSeconds(rest: string): number {
+  if (!rest) return 60;
+  const m = rest.match(/^(\d+):(\d+)$/);
+  if (m) return parseInt(m[1]) * 60 + parseInt(m[2]);
+  const s = rest.match(/^(\d+)/);
+  return s ? parseInt(s[1]) : 60;
+}
 
 function DevLogin() {
   const [email, setEmail] = useState('');
@@ -66,13 +116,36 @@ export default function App() {
     templates: [],
   });
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
-  const [selectedDayId, setSelectedDayId] = useState<string>('');
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
   const [checkingSquad, setCheckingSquad] = useState(true);
+  const [squadLoading, setSquadLoading] = useState(false);
+  const [selectedWeekDay, setSelectedWeekDay] = useState<number>(() => (new Date().getDay() + 6) % 7);
   const [diasTreinados, setDiasTreinados] = useState(0);
+  const [memberStreaks, setMemberStreaks] = useState<Record<string, number>>({});
+  const [progressStats, setProgressStats] = useState<{
+    thisWeekByDate: Record<string, number>;
+    lastWeekByDate: Record<string, number>;
+    loading: boolean;
+  }>({ thisWeekByDate: {}, lastWeekByDate: {}, loading: false });
 
+  // Exercícios rastreados pelo usuário (independente do plano)
+  type TrackedExercise = { id: string; name: string };
+  type LoadEntry       = { id: string; date: string; load_notes: string };
+  const [trackedExercises, setTrackedExercises] = useState<TrackedExercise[]>([]);
+  const [loadHistory, setLoadHistory]           = useState<Record<string, LoadEntry[]>>({});
+  const [loadInputs, setLoadInputs]             = useState<Record<string, string>>({});
+  const [savedLoadIds, setSavedLoadIds]         = useState<Set<string>>(new Set());
+  const [loadsLoading, setLoadsLoading]         = useState(false);
+
+  // ── Features: set tracking, rest timer, per-set loads, PR ───────────────────
+  const [setProgress, setSetProgress] = useState<Record<string, boolean[]>>({});
+  const [restTimer, setRestTimer] = useState<{ exerciseId: string; remaining: number; total: number } | null>(null);
+  const [setLoadData, setSetLoadData] = useState<Record<string, Array<{ weight: string; reps: string }>>>(() => {
+    try { return JSON.parse(localStorage.getItem('kronos_set_loads') ?? '{}'); } catch { return {}; }
+  });
+  const [prIds, setPrIds] = useState<Set<string>>(new Set());
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -107,107 +180,261 @@ export default function App() {
 useEffect(() => {
   if (!squadId) return;
 
-  // Busca dados do squad
-  supabase
-    .from('squads')
-    .select('id, name, icon, invite_code')
-    .eq('id', squadId)
-    .single()
-    .then(({ data: squadData }) => {
-      if (!squadData) return;
+  const load = async () => {
+    setSquadLoading(true);
+    const today = localDateStr();
+    const oneYearAgo = localDateStr(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
 
-      // Busca membros do squad
-      supabase
-        .from('squad_members')
-        .select('user_id, role')
-        .eq('squad_id', squadId)
-        .then(async ({ data: membersData }) => {
-          // Busca perfis dos membros
-          const userIds = (membersData || []).map((m: any) => m.user_id);
-          const [{ data: profilesData }, { data: ownProfile }] = await Promise.all([
-            supabase.from('profiles').select('id, name, avatar_url').in('id', userIds),
-            supabase.from('profiles').select('id, name, avatar_url').eq('id', session.user.id).single(),
-          ]);
-const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
-          // Garante que o próprio usuário sempre aparece com dados corretos
-          if (ownProfile) profileMap.set(ownProfile.id, ownProfile);
+    // ── Batch 1: 3 requisições em paralelo ──────────────────────────────────
+    const [
+      { data: squadData },
+      { data: membersData },
+      { data: daysData },
+    ] = await Promise.all([
+      supabase.from('squads').select('id, name, icon, invite_code').eq('id', squadId).single(),
+      supabase.from('squad_members').select('user_id, role').eq('squad_id', squadId),
+      supabase.from('workout_days').select('id, name, focus, day_order').eq('squad_id', squadId).order('day_order'),
+    ]);
 
-          // Busca dias do squad
-          supabase
-            .from('workout_days')
-            .select('id, name, focus, day_order')
-            .eq('squad_id', squadId)
-            .order('day_order')
-            .then(({ data: daysData }) => {
-              if (!daysData) return;
+    if (!squadData || !daysData) { setSquadLoading(false); return; }
 
-              setSquad(prev => ({
-                ...prev,
-                id: squadData.id,
-                name: squadData.name,
-                icon: squadData.icon || prev.icon,
-                inviteCode: squadData.invite_code,
-                members: (membersData || []).map((m: any) => ({
-                  id: m.user_id,
-                  name: profileMap.get(m.user_id)?.name || (m.user_id === session?.user?.id ? (session?.user?.email || 'Você') : 'Membro'),
-                  avatar: profileMap.get(m.user_id)?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
-                  role: m.role,
-                  isOnline: m.user_id === session?.user?.id,
-                })),
-                weeklyPlan: daysData.map((day: any) => ({
-                  id: day.id,
-                  name: day.name,
-                  focus: day.focus || '',
-                  exercises: [],
-                })),
-              }));
+    const dayIds = daysData.map((d: any) => d.id);
+    const memberUserIds = (membersData || []).map((m: any) => m.user_id);
+    const allUserIds = [...new Set([...memberUserIds, session.user.id])];
 
-              // Busca exercícios de cada dia
-              const today = new Date().toISOString().split('T')[0];
+    // ── Batch 2: 4 requisições em paralelo ──────────────────────────────────
+    // Exercícios: 1 query com .in() em vez de N queries separadas
+    const [
+      { data: exercisesData },
+      { data: progressData },
+      { data: profilesData },
+      { data: allProgressData },
+      { data: membersProgressData },
+    ] = await Promise.all([
+      supabase.from('exercises').select('id, name, sets, reps, rest, notes, workout_day_id').in('workout_day_id', dayIds).order('created_at', { ascending: true }),
+      supabase.from('exercise_progress').select('exercise_id, completed').eq('user_id', session.user.id).eq('date', today),
+      supabase.from('profiles').select('id, name, avatar_url').in('id', allUserIds),
+      supabase.from('exercise_progress').select('date').eq('user_id', session.user.id).eq('completed', true).gte('date', oneYearAgo),
+      memberUserIds.length > 0
+        ? supabase.from('exercise_progress').select('user_id, date').in('user_id', memberUserIds).eq('completed', true).gte('date', oneYearAgo)
+        : Promise.resolve({ data: [] }),
+    ]);
 
-              Promise.all(daysData.map((day: any) => fetchExercisesByDay(day.id)))
-                .then(async exercisesPerDay => {
-                  const { data: progressData } = await supabase
-                    .from('exercise_progress')
-                    .select('exercise_id, completed')
-                    .eq('user_id', session?.user?.id)
-                    .eq('date', today);
+    // ── Montar estado completo de uma vez ────────────────────────────────────
+    const progressMap = new Map((progressData || []).map((p: any) => [p.exercise_id, p.completed]));
+    const profileMap  = new Map((profilesData  || []).map((p: any) => [p.id, p]));
 
-                  const progressMap = new Map(
-                    (progressData || []).map((p: any) => [p.exercise_id, p.completed])
-                  );
+    // Agrupar exercícios por dia
+    const exercisesByDay = new Map<string, Exercise[]>();
+    for (const ex of (exercisesData || [])) {
+      const arr = exercisesByDay.get(ex.workout_day_id) ?? [];
+      arr.push({
+        id: ex.id,
+        name: ex.name,
+        sets: ex.sets,
+        reps: ex.reps,
+        rest: ex.rest,
+        notes: ex.notes ?? undefined,
+        completed: progressMap.get(ex.id) ?? false,
+      });
+      exercisesByDay.set(ex.workout_day_id, arr);
+    }
 
-                  setSquad(prev => ({
-                    ...prev,
-                    weeklyPlan: prev.weeklyPlan.map((day, i) => ({
-                      ...day,
-                      exercises: exercisesPerDay[i].map(ex => ({
-                        ...ex,
-                        completed: progressMap.get(ex.id) ?? false,
-                      })),
-                    })),
-                  }));
-                })
-                .catch(console.error);
-            });
-        });
+    setSquad({
+      id: squadData.id,
+      name: squadData.name,
+      icon: squadData.icon || '',
+      inviteCode: squadData.invite_code,
+      templates: [],
+      members: (membersData || []).map((m: any) => ({
+        id: m.user_id,
+        name: profileMap.get(m.user_id)?.name || (m.user_id === session.user.id ? session.user.email : 'Membro'),
+        avatar: profileMap.get(m.user_id)?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
+        role: m.role,
+        isOnline: m.user_id === session.user.id,
+      })),
+      weeklyPlan: daysData.map((day: any) => ({
+        id: day.id,
+        name: day.name,
+        focus: day.focus || '',
+        exercises: exercisesByDay.get(day.id) ?? [],
+      })),
     });
+
+    // Índices dos dias com treino (Seg=0…Dom=6) — dias sem exercícios = descanso
+    const trainingDayIndices = daysData
+      .map((_: any, idx: number) =>
+        (exercisesByDay.get(daysData[idx].id) ?? []).length > 0 ? idx : -1
+      )
+      .filter((i: number) => i !== -1);
+
+    // Dias treinados (streak consecutivo) — dados já vêm no batch 2
+    const myDates = (allProgressData || []).map((r: any) => r.date as string);
+    setDiasTreinados(calcStreak(myDates, trainingDayIndices));
+
+    // Streak consecutivo por membro do squad (mesmo plano = mesmos dias de treino)
+    const streaksByMember: Record<string, number> = {};
+    const mpData = (membersProgressData || []) as { user_id: string; date: string }[];
+    const datesByMember: Record<string, string[]> = {};
+    for (const row of mpData) {
+      if (!datesByMember[row.user_id]) datesByMember[row.user_id] = [];
+      datesByMember[row.user_id].push(row.date);
+    }
+    for (const uid of memberUserIds) {
+      streaksByMember[uid] = calcStreak(datesByMember[uid] || [], trainingDayIndices);
+    }
+    setMemberStreaks(streaksByMember);
+    setSquadLoading(false);
+  };
+
+  load().catch(console.error);
 }, [squadId]);
 
   const fetchDiasTreinados = useCallback(async () => {
     if (!session?.user?.id) return;
+
+    const trainingDayIndices = squad.weeklyPlan
+      .map((day, idx) => day.exercises.length > 0 ? idx : -1)
+      .filter(i => i !== -1);
+
+    const oneYearAgo = localDateStr(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
     const { data } = await supabase
       .from('exercise_progress')
       .select('date')
       .eq('user_id', session.user.id)
-      .eq('completed', true);
-    const unique = new Set((data || []).map((r: any) => r.date));
-    setDiasTreinados(unique.size);
+      .eq('completed', true)
+      .gte('date', oneYearAgo);
+    const myDates = (data || []).map((r: any) => r.date as string);
+    setDiasTreinados(calcStreak(myDates, trainingDayIndices));
+  }, [session?.user?.id, squad.weeklyPlan]);
+
+  const fetchProgressStats = useCallback(async () => {
+    if (!session?.user?.id) return;
+    setProgressStats(p => ({ ...p, loading: true }));
+
+    const getWeekRange = (offsetWeeks = 0) => {
+      const now = new Date();
+      const dayOfWeek = (now.getDay() + 6) % 7; // Seg=0
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - dayOfWeek + offsetWeeks * 7);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      return {
+        start: localDateStr(monday),
+        end: localDateStr(sunday),
+      };
+    };
+
+    const thisWeek = getWeekRange(0);
+    const lastWeek = getWeekRange(-1);
+
+    const [{ data: thisData }, { data: lastData }] = await Promise.all([
+      supabase.from('exercise_progress').select('date').eq('user_id', session.user.id).eq('completed', true).gte('date', thisWeek.start).lte('date', thisWeek.end),
+      supabase.from('exercise_progress').select('date').eq('user_id', session.user.id).eq('completed', true).gte('date', lastWeek.start).lte('date', lastWeek.end),
+    ]);
+
+    const countByDate = (rows: { date: string }[]) => {
+      const result: Record<string, number> = {};
+      for (const row of (rows || [])) result[row.date] = (result[row.date] ?? 0) + 1;
+      return result;
+    };
+
+    setProgressStats({
+      thisWeekByDate: countByDate(thisData ?? []),
+      lastWeekByDate: countByDate(lastData ?? []),
+      loading: false,
+    });
   }, [session?.user?.id]);
 
   useEffect(() => {
-    fetchDiasTreinados();
-  }, [fetchDiasTreinados]);
+    if (currentView === 'progress') fetchProgressStats();
+  }, [currentView, fetchProgressStats]);
+
+  useEffect(() => {
+    if (currentView !== 'progress' || !session?.user?.id) return;
+    setLoadsLoading(true);
+
+    supabase
+      .from('tracked_exercises')
+      .select('id, name')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: true })
+      .then(async ({ data: exData }) => {
+        const exList = (exData || []) as { id: string; name: string }[];
+        setTrackedExercises(exList);
+
+        if (exList.length === 0) { setLoadsLoading(false); return; }
+
+        const { data: loadsData } = await supabase
+          .from('exercise_loads')
+          .select('id, tracked_exercise_id, date, load_notes')
+          .eq('user_id', session.user.id)
+          .in('tracked_exercise_id', exList.map(e => e.id))
+          .order('date', { ascending: false });
+
+        const grouped: Record<string, { id: string; date: string; load_notes: string }[]> = {};
+        for (const row of (loadsData || [])) {
+          if (!grouped[row.tracked_exercise_id]) grouped[row.tracked_exercise_id] = [];
+          grouped[row.tracked_exercise_id].push({ id: row.id, date: row.date, load_notes: row.load_notes });
+        }
+        setLoadHistory(grouped);
+
+        // Pré-preenche o campo com o último registro
+        const inputs: Record<string, string> = {};
+        for (const [exId, entries] of Object.entries(grouped)) {
+          if (entries[0]) inputs[exId] = entries[0].load_notes;
+        }
+        setLoadInputs(inputs);
+        setLoadsLoading(false);
+      });
+  }, [currentView, session?.user?.id]); // eslint-disable-line
+
+  // Initialize setProgress when squad weeklyPlan loads
+  useEffect(() => {
+    setSetProgress(prev => {
+      const next = { ...prev };
+      for (const day of squad.weeklyPlan) {
+        for (const ex of day.exercises) {
+          if (!(ex.id in next)) {
+            next[ex.id] = Array(ex.sets).fill(ex.completed);
+          }
+        }
+      }
+      return next;
+    });
+  }, [squad.weeklyPlan]);
+
+  // Rest timer countdown + notificação ao zerar
+  useEffect(() => {
+    if (!restTimer) return;
+    if (restTimer.remaining <= 0) {
+      setRestTimer(null);
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Descanse acabou! 💪', {
+          body: 'Hora da próxima série',
+          icon: '/kronos-icon.png',
+          silent: false,
+        });
+      }
+      return;
+    }
+    const id = setTimeout(() => {
+      setRestTimer(prev => prev ? { ...prev, remaining: prev.remaining - 1 } : null);
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [restTimer]);
+
+  // Persist load data to localStorage
+  useEffect(() => {
+    localStorage.setItem('kronos_set_loads', JSON.stringify(setLoadData));
+  }, [setLoadData]);
+
+  // Request notification permission once
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
 
   // ── Returns condicionais (só depois de todos os hooks) ──
   if (authLoading || checkingSquad) return <div style={{ color: '#fff', padding: 40, background: '#09090b', minHeight: '100vh' }}>Carregando...</div>;
@@ -220,21 +447,16 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
     return <DevLogin />;
   }
 
-  if (!squadId) return (
-    <Onboarding
-      userId={session.user.id}
-      onComplete={() => {
-        supabase
-          .from('squad_members')
-          .select('squad_id')
-          .eq('user_id', session.user.id)
-          .limit(1)
-          .then(({ data }) => {
-            setSquadId(data?.[0]?.squad_id || null);
-          });
-      }}
-    />
-  );
+  const refreshSquad = () => {
+    supabase
+      .from('squad_members')
+      .select('squad_id')
+      .eq('user_id', session.user.id)
+      .limit(1)
+      .then(({ data }) => {
+        setSquadId(data?.[0]?.squad_id || null);
+      });
+  };
 
   const openEditor = (dayId: string, exercise: Exercise) => {
     setEditingExercise({ dayId, exercise });
@@ -256,6 +478,56 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
     setEditingExercise(null);
   };
 
+  const createTrackedExercise = async (name: string): Promise<boolean> => {
+    if (!name.trim()) return false;
+    const { data, error } = await supabase
+      .from('tracked_exercises')
+      .insert({ user_id: session.user.id, name: name.trim() })
+      .select('id, name')
+      .single();
+    if (error) {
+      console.error('Erro ao criar exercício:', error);
+      alert('Erro ao criar exercício.');
+      return false;
+    }
+    if (data) setTrackedExercises(prev => [...prev, data as { id: string; name: string }]);
+    return true;
+  };
+
+  const deleteTrackedExercise = async (id: string) => {
+    await supabase.from('tracked_exercises').delete().eq('id', id);
+    setTrackedExercises(prev => prev.filter(e => e.id !== id));
+    setLoadHistory(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setLoadInputs(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+
+  const saveLoad = async (trackedExId: string, notes: string) => {
+    if (!notes.trim()) return;
+    const today = localDateStr();
+    const { data, error } = await supabase
+      .from('exercise_loads')
+      .insert({ tracked_exercise_id: trackedExId, user_id: session.user.id, date: today, load_notes: notes.trim() })
+      .select('id, date, load_notes')
+      .single();
+    if (!error && data) {
+      setLoadHistory(prev => ({
+        ...prev,
+        [trackedExId]: [{ id: data.id, date: data.date, load_notes: data.load_notes }, ...(prev[trackedExId] ?? [])],
+      }));
+      setLoadInputs(prev => ({ ...prev, [trackedExId]: '' }));
+      setSavedLoadIds(prev => new Set(prev).add(trackedExId));
+      setTimeout(() => setSavedLoadIds(prev => { const s = new Set(prev); s.delete(trackedExId); return s; }), 2000);
+    }
+  };
+
+  const deleteLoad = async (trackedExId: string, loadId: string) => {
+    await supabase.from('exercise_loads').delete().eq('id', loadId);
+    setLoadHistory(prev => ({
+      ...prev,
+      [trackedExId]: (prev[trackedExId] ?? []).filter(e => e.id !== loadId),
+    }));
+  };
+
   const todayIndex = (new Date().getDay() + 6) % 7; // Adjust to Monday = 0
   const todayId = squad.weeklyPlan[todayIndex]?.id ?? squad.weeklyPlan[0]?.id ?? '';
 
@@ -272,7 +544,7 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
         exercise_id: exerciseId,
         user_id: session.user.id,
         completed: newCompleted,
-        date: new Date().toISOString().split('T')[0],
+        date: localDateStr(),
       }, { onConflict: 'exercise_id,user_id,date' });
 
     setSquad(prev => ({
@@ -289,15 +561,67 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
     fetchDiasTreinados();
   };
 
-  const resetDay = (dayId: string) => {
+  const resetDay = async (dayId: string) => {
+    const day = squad.weeklyPlan.find(d => d.id === dayId);
+    if (day && day.exercises.length > 0) {
+      await supabase
+        .from('exercise_progress')
+        .delete()
+        .eq('user_id', session.user.id)
+        .eq('date', localDateStr())
+        .in('exercise_id', day.exercises.map(e => e.id));
+    }
     setSquad(prev => ({
       ...prev,
-      weeklyPlan: prev.weeklyPlan.map(day => 
-        day.id === dayId 
-          ? { ...day, exercises: day.exercises.map(ex => ({ ...ex, completed: false })) }
-          : day
+      weeklyPlan: prev.weeklyPlan.map(d =>
+        d.id === dayId
+          ? { ...d, exercises: d.exercises.map(ex => ({ ...ex, completed: false })) }
+          : d
       )
     }));
+    fetchDiasTreinados();
+  };
+
+  const handleSetToggle = (dayId: string, exercise: Exercise, setIndex: number) => {
+    const current = setProgress[exercise.id] ?? Array(exercise.sets).fill(false);
+    const updated = [...current];
+    updated[setIndex] = !updated[setIndex];
+
+    const allDone = updated.every(Boolean);
+    const wasAllDone = current.every(Boolean);
+
+    setSetProgress(prev => ({ ...prev, [exercise.id]: updated }));
+
+    if (allDone && !wasAllDone && !exercise.completed) toggleExercise(dayId, exercise.id);
+    if (!allDone && wasAllDone && exercise.completed) toggleExercise(dayId, exercise.id);
+
+    if (updated[setIndex]) {
+      const secs = parseRestSeconds(exercise.rest);
+      if (secs > 0) setRestTimer({ exerciseId: exercise.id, remaining: secs, total: secs });
+
+      // PR check
+      const weight = parseFloat(setLoadData[exercise.id]?.[setIndex]?.weight ?? '');
+      if (!isNaN(weight) && weight > 0) {
+        const stored: Record<string, number> = JSON.parse(localStorage.getItem('kronos_pr') ?? '{}');
+        if (weight > (stored[exercise.id] ?? 0)) {
+          stored[exercise.id] = weight;
+          localStorage.setItem('kronos_pr', JSON.stringify(stored));
+          setPrIds(prev => new Set(prev).add(exercise.id));
+          setTimeout(() => setPrIds(prev => { const s = new Set(prev); s.delete(exercise.id); return s; }), 6000);
+        }
+      }
+    } else {
+      setRestTimer(prev => prev?.exerciseId === exercise.id ? null : prev);
+    }
+  };
+
+  const handleLoadChange = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', val: string) => {
+    setSetLoadData(prev => {
+      const sets = prev[exerciseId] ? [...prev[exerciseId]] : [];
+      while (sets.length <= setIndex) sets.push({ weight: '', reps: '' });
+      sets[setIndex] = { ...sets[setIndex], [field]: val };
+      return { ...prev, [exerciseId]: sets };
+    });
   };
 
   const addExercise = (dayId: string) => {
@@ -380,7 +704,7 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
       ...prev,
       weeklyPlan: prev.weeklyPlan.map(day => 
         day.id === dayId 
-          ? { ...day, focus: template.name, exercises: template.exercises.map(ex => ({ ...ex, id: Math.random().toString(36).substr(2, 9) })) }
+          ? { ...day, focus: template.name, exercises: template.exercises.map(ex => ({ ...ex, id: Math.random().toString(36).substring(2, 11) })) }
           : day
       )
     }));
@@ -392,450 +716,591 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
   const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
-    <div className="flex h-screen bg-[#09090b] text-zinc-100 font-sans overflow-hidden">
+    <div className="flex h-screen bg-[#0A0A0A] text-[#E8E8E8] font-sans overflow-hidden">
       {/* Sidebar — só aparece em telas md+ */}
-      <aside className="hidden md:flex w-64 border-r border-zinc-800 flex-col p-6 gap-8 bg-[#09090b] z-20">
-        <div className="flex items-center gap-3 px-2">
-          <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
-            <Dumbbell className="text-white w-6 h-6" />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight">SquadFit</h1>
+      <aside className="hidden md:flex w-52 border-r border-[#1F1F1F] flex-col py-6 bg-[#0A0A0A] z-20 shrink-0">
+        <div className="px-5 mb-8">
+          <p className="text-[10px] text-[#616161] font-medium uppercase tracking-widest mb-1.5">Squad</p>
+          <p className="text-sm font-semibold text-[#E8E8E8] truncate">{squad.name || 'Kronos'}</p>
         </div>
 
-        <nav className="flex flex-col gap-2">
-          <NavItem
-            icon={<LayoutDashboard size={20} />}
-            label="Dashboard"
-            active={currentView === 'dashboard'}
-            onClick={() => setCurrentView('dashboard')}
-          />
-          <NavItem
-            icon={<Calendar size={20} />}
-            label="Semana"
-            active={currentView === 'week'}
-            onClick={() => setCurrentView('week')}
-          />
-          <NavItem
-            icon={<Users size={20} />}
-            label="Equipe"
-            active={currentView === 'squad'}
-            onClick={() => setCurrentView('squad')}
-          />
-          <NavItem
-            icon={<TrendingUp size={20} />}
-            label="Progresso"
-            active={currentView === 'progress'}
-            onClick={() => setCurrentView('progress')}
-          />
+        <nav className="flex flex-col gap-0.5 px-3 flex-1">
+          <NavItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
+          <NavItem icon={<Calendar size={16} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
+          <NavItem icon={<Users size={16} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
+          <NavItem icon={<TrendingUp size={16} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
         </nav>
 
-        <div className="mt-auto">
-          <NavItem
-            icon={<SettingsIcon size={20} />}
-            label="Configurações"
-            active={currentView === 'settings'}
-            onClick={() => setCurrentView('settings')}
-          />
+        <div className="px-3">
+          <NavItem icon={<SettingsIcon size={16} />} label="Configurações" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
         </div>
       </aside>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto relative">
-        <div className="max-w-7xl mx-auto p-4 md:p-8 pb-28 md:pb-24">
+        <div className="max-w-5xl mx-auto p-4 md:p-8 pb-28 md:pb-10">
           {/* Header */}
-          <header className="flex items-center justify-between mb-6 md:mb-10">
-            <div className="flex items-center gap-3">
-              {squad.icon ? (
-                <img
-                  src={squad.icon}
-                  alt={squad.name}
-                  className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover bg-zinc-800"
-                  referrerPolicy="no-referrer"
-                  onError={e => (e.currentTarget.style.display = 'none')}
-                />
-              ) : (
-                <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500 font-bold text-lg">
-                  {squad.name?.[0]?.toUpperCase() || 'S'}
-                </div>
-              )}
-              <div>
-                <h2 className="text-base md:text-xl font-bold leading-tight">{squad.name}</h2>
-                <p className="text-zinc-500 text-xs flex items-center gap-1">
-                  <Users size={11} /> {squad.members.length} membros
-                </p>
-              </div>
+          <header className="flex items-center justify-between mb-5 md:mb-8">
+            <div>
+              <h2 className="text-lg font-semibold text-[#E8E8E8]">
+                {currentView === 'dashboard' && 'Hoje'}
+                {currentView === 'week' && 'Semana'}
+                {currentView === 'squad' && 'Equipe'}
+                {currentView === 'progress' && 'Progresso'}
+                {currentView === 'settings' && 'Configurações'}
+              </h2>
+              <p className="text-xs text-[#616161] mt-0.5 capitalize">
+                {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
+              </p>
             </div>
             <AppSwitcher currentApp="treino" userEmail={session?.user?.email} />
           </header>
 
-          {currentView === 'dashboard' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Left Column: Today's Focus */}
-              <div className="lg:col-span-2 space-y-8">
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex flex-col">
-                      <h3 className="text-lg font-semibold flex items-center gap-2">
-                        Treino de Hoje <span className="text-zinc-500 font-normal text-sm">— {currentDayPlan.name}</span>
-                      </h3>
-                      <div className="flex items-center gap-2 group mt-1 relative">
-                        <div className="flex-1 relative">
-                          <input 
-                            type="text"
-                            value={currentDayPlan.focus || ''}
-                            onChange={(e) => updateDayFocus(todayId, e.target.value)}
-                            placeholder="Defina o foco do treino (ex: Peito)"
-                            className="bg-transparent border-none text-emerald-500 font-bold text-xl p-0 focus:ring-0 outline-none placeholder:text-zinc-700 w-full"
-                          />
-                          {squad.templates.length > 0 && (
-                            <div className="absolute top-full left-0 mt-1 w-64 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-30 hidden group-focus-within:block max-h-48 overflow-y-auto">
-                              <p className="p-2 text-[10px] font-bold text-zinc-500 uppercase border-b border-zinc-800">Seus Modelos</p>
-                              {squad.templates.map(t => (
-                                <button 
-                                  key={t.id}
-                                  onClick={() => loadTemplate(todayId, t.id)}
-                                  className="w-full text-left px-3 py-2 text-sm hover:bg-zinc-800 transition-colors flex justify-between items-center"
-                                >
-                                  <span>{t.name}</span>
-                                  <span className="text-[10px] text-zinc-500">{t.exercises.length} exs</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button 
-                            onClick={() => saveAsTemplate(todayId)}
-                            className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-emerald-500 transition-colors"
-                            title="Salvar como modelo"
-                          >
-                            <Plus size={14} />
-                          </button>
-                          <Edit3 size={14} className="text-zinc-600" />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button 
-                        onClick={() => resetDay(todayId)}
-                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 transition-colors"
-                        title="Resetar progresso"
-                      >
-                        <RotateCcw size={18} />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 mb-6">
-                    <div className="flex items-center justify-between mb-6">
-                      <div>
-                        <p className="text-zinc-400 text-sm mb-1">Progresso do Dia</p>
-                        <h4 className="text-3xl font-bold">{completedCount} / {totalCount}</h4>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-emerald-500 font-bold text-xl">{Math.round(progress)}%</p>
-                        <p className="text-zinc-500 text-xs">concluído</p>
-                      </div>
-                    </div>
-                    <div className="w-full bg-zinc-800 h-3 rounded-full overflow-hidden">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${progress}%` }}
-                        className="h-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    {currentDayPlan.exercises.length > 0 ? (
-                      currentDayPlan.exercises.map((ex) => (
-                        <ExerciseItem 
-                          key={ex.id} 
-                          exercise={ex} 
-                          onToggle={() => toggleExercise(todayId, ex.id)}
-                          showEdit={false}
-                        />
-                      ))
-                    ) : (
-                      <div className="py-12 text-center border-2 border-dashed border-zinc-800 rounded-3xl">
-                        <p className="text-zinc-500">Nenhum exercício para hoje. Descanso merecido!</p>
-                      </div>
-                    )}
-                  </div>
-                </section>
+          {currentView === 'dashboard' && squadLoading && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-pulse">
+              <div className="lg:col-span-2 space-y-4">
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-48" />
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-14" />
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-14" />
               </div>
-
-              {/* Right Column: Squad & Progress */}
-              <div className="space-y-8">
-                <section className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
-                  <h3 className="text-lg font-semibold mb-4">Squad Online</h3>
-                  <div className="space-y-4">
-                    {squad.members.map(member => (
-                      <div key={member.id} className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="relative">
-                            <img 
-                              src={member.avatar} 
-                              alt={member.name} 
-                              className="w-10 h-10 rounded-full bg-zinc-800"
-                              referrerPolicy="no-referrer"
-                            />
-                            {member.isOnline && (
-                              <div className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-[#09090b] rounded-full" />
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-medium text-sm">{member.name}</p>
-                            <p className="text-xs text-zinc-500 capitalize">{member.role}</p>
-                          </div>
-                        </div>
-                        {member.role === 'admin' && (
-                          <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                            Admin
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6 flex items-center gap-3">
-                  <span className="text-2xl">🔥</span>
-                  <div>
-                    <p className="text-white font-bold text-xl">{diasTreinados} dias treinados</p>
-                    <p className="text-zinc-400 text-xs">exercícios concluídos no total</p>
-                  </div>
-                </section>
-
-                <section className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
-                  <h3 className="text-lg font-semibold mb-6">Sequência Semanal</h3>
-                  <div className="flex flex-col items-center gap-4 relative">
-                    {/* SVG Path for Duolingo feel */}
-                    <div className="absolute left-6 top-6 bottom-6 w-0.5 bg-zinc-800 -z-10" />
-                    
-                    {squad.weeklyPlan.map((day, idx) => {
-                      const isToday = idx === todayIndex;
-                      const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
-                      const offset = (idx % 2 === 0 ? 0 : 20); // S-curve effect
-
-                      return (
-                        <div 
-                          key={day.id} 
-                          className="flex flex-col items-center w-full"
-                          style={{ transform: `translateX(${offset}px)` }}
-                        >
-                          <div className="flex items-center gap-4 w-full">
-                            <motion.div 
-                              whileHover={{ scale: 1.1 }}
-                              className={`
-                                w-12 h-12 rounded-full flex items-center justify-center text-sm font-bold transition-all cursor-pointer
-                                ${isDone ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/40' : 
-                                  isToday ? 'bg-zinc-100 text-zinc-900 scale-110 shadow-lg shadow-white/20 ring-4 ring-emerald-500/20' : 
-                                  'bg-zinc-800 text-zinc-500 border border-zinc-700'}
-                              `}
-                            >
-                              {isDone ? <CheckCircle2 size={20} /> : day.name.substring(0, 1)}
-                            </motion.div>
-                            <div className="flex-1">
-                              <p className={`text-sm font-bold ${isToday ? 'text-zinc-100' : 'text-zinc-500'}`}>
-                                {day.name}
-                              </p>
-                              <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
-                                {day.exercises.length} EXS
-                              </p>
-                            </div>
-                          </div>
-                          {idx < 6 && (
-                            <div className="h-4" />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
+              <div className="space-y-4">
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-24" />
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-40" />
               </div>
             </div>
           )}
 
-          {currentView === 'week' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-              {squad.weeklyPlan.map((day, idx) => (
-                <div key={day.id} className={`flex flex-col gap-4 p-5 rounded-3xl border transition-all ${idx === todayIndex ? 'bg-zinc-900/80 border-zinc-700 shadow-2xl' : 'bg-zinc-900/30 border-zinc-800'}`}>
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center justify-between">
-                      <h3 className={`font-bold ${idx === todayIndex ? 'text-emerald-400' : 'text-zinc-300'}`}>
-                        {day.name}
-                        {idx === todayIndex && <span className="ml-2 text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full uppercase">Hoje</span>}
-                      </h3>
-                      <div className="flex items-center gap-1">
-                        <button className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors">
-                          <Copy size={14} />
-                        </button>
-                        <button className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors">
-                          <Plus size={14} onClick={() => addExercise(day.id)} />
-                        </button>
-                      </div>
+          {currentView === 'dashboard' && !squadLoading && (
+            <>
+            {/* Mobile: quick stats row (streak + mini-week) */}
+            <div className="flex gap-3 mb-4 lg:hidden">
+              {(() => {
+                const { color } = getStreakStyle(diasTreinados);
+                return (
+                  <div className="flex-1 bg-[#111111] border border-[#1F1F1F] rounded-xl p-4">
+                    <p className="text-[10px] text-[#616161] uppercase tracking-widest mb-1.5">Sequência</p>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-bold tabular-nums" style={{ color }}>{diasTreinados}</span>
+                      <span className="text-xs text-[#616161]">dias</span>
                     </div>
-                    <div className="relative group/focus">
-                      <input 
+                  </div>
+                );
+              })()}
+              <div className="flex-1 bg-[#111111] border border-[#1F1F1F] rounded-xl p-4">
+                <p className="text-[10px] text-[#616161] uppercase tracking-widest mb-3">Esta semana</p>
+                <div className="flex gap-1 items-end">
+                  {squad.weeklyPlan.map((day, idx) => {
+                    const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
+                    const isToday = idx === todayIndex;
+                    return (
+                      <div key={day.id} className={`flex-1 rounded-sm transition-all ${
+                        isDone ? 'bg-emerald-500 h-5' :
+                        isToday ? 'bg-emerald-500/40 h-4' :
+                        day.exercises.length > 0 ? 'bg-[#2a2a2a] h-3' : 'bg-[#1a1a1a] h-2'
+                      }`} />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Left Column */}
+              <div className="lg:col-span-2 space-y-4">
+
+                {/* Hero card: foco + progresso */}
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5 md:p-6">
+                  <div className="flex items-start justify-between mb-5">
+                    <div className="flex-1 group relative">
+                      <p className="text-[10px] text-[#3a3a3a] mb-2 uppercase tracking-[0.2em] font-semibold">{currentDayPlan.name}</p>
+                      <input
                         type="text"
-                        value={day.focus || ''}
-                        onChange={(e) => updateDayFocus(day.id, e.target.value)}
-                        placeholder="Foco do dia..."
-                        className="bg-transparent border-none text-xs font-bold text-emerald-500/80 p-0 focus:ring-0 outline-none placeholder:text-zinc-700 w-full uppercase tracking-wider"
+                        value={currentDayPlan.focus || ''}
+                        onChange={(e) => updateDayFocus(todayId, e.target.value)}
+                        placeholder="FOCO DO TREINO"
+                        className="bg-transparent border-none text-[#E8E8E8] p-0 focus:ring-0 outline-none placeholder:text-[#1e1e1e] w-full uppercase"
+                        style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 900, fontSize: 'clamp(1.6rem, 5vw, 2.4rem)', letterSpacing: '0.06em' }}
                       />
                       {squad.templates.length > 0 && (
-                        <div className="absolute top-full left-0 mt-1 w-48 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-30 hidden group-focus-within/focus:block max-h-40 overflow-y-auto">
+                        <div className="absolute top-full left-0 mt-2 w-56 bg-[#161616] border border-[#1F1F1F] rounded-xl z-30 hidden group-focus-within:block max-h-44 overflow-y-auto">
                           {squad.templates.map(t => (
-                            <button 
-                              key={t.id}
-                              onClick={() => loadTemplate(day.id, t.id)}
-                              className="w-full text-left px-2 py-1.5 text-[10px] hover:bg-zinc-800 transition-colors flex justify-between items-center"
-                            >
+                            <button key={t.id} onClick={() => loadTemplate(todayId, t.id)}
+                              className="w-full text-left px-4 py-2.5 text-sm text-[#E8E8E8] hover:bg-[#1F1F1F] transition-colors flex justify-between items-center">
                               <span>{t.name}</span>
-                              <span className="text-zinc-500">{t.exercises.length} exs</span>
+                              <span className="text-xs text-[#616161]">{t.exercises.length} exs</span>
                             </button>
                           ))}
                         </div>
                       )}
                     </div>
+                    <button onClick={() => resetDay(todayId)}
+                      className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors ml-3 shrink-0"
+                      title="Resetar">
+                      <RotateCcw size={15} />
+                    </button>
                   </div>
-                  
-                  <div className="space-y-3 flex-1">
-                    {day.exercises.length > 0 ? (
-                      day.exercises.map(ex => (
-                        <div 
-                          key={ex.id} 
-                          onClick={() => openEditor(day.id, ex)}
-                          className="group relative bg-zinc-800/40 hover:bg-zinc-800 p-3 rounded-2xl border border-zinc-700/50 transition-all cursor-pointer"
-                        >
-                          <div className="flex justify-between items-start mb-1">
-                            <p className="text-sm font-semibold text-zinc-200 truncate pr-10">{ex.name}</p>
-                            <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); openEditor(day.id, ex); }}
-                                className="p-1 hover:text-emerald-400"
-                              >
-                                <Edit3 size={12} />
-                              </button>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); deleteExercise(day.id, ex.id); }}
-                                className="p-1 hover:text-red-400"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3 text-[10px] text-zinc-500 font-medium uppercase tracking-wider">
-                            <span>{ex.sets} sets</span>
-                            <span className="w-1 h-1 bg-zinc-700 rounded-full" />
-                            <span>{ex.reps} reps</span>
-                            <span className="w-1 h-1 bg-zinc-700 rounded-full" />
-                            <span className="flex items-center gap-1"><Clock size={10} /> {ex.rest}</span>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center py-10 opacity-30">
-                        <Plus size={24} className="mb-2" />
-                        <p className="text-xs">Vazio</p>
-                      </div>
-                    )}
+
+                  <div className="flex items-end justify-between mb-3">
+                    <div>
+                      <span className="text-4xl font-bold text-[#E8E8E8] tabular-nums">{completedCount}</span>
+                      <span className="text-xl text-[#616161] font-medium"> / {totalCount}</span>
+                    </div>
+                    <span className={`text-sm font-semibold tabular-nums ${progress === 100 ? 'text-emerald-400' : 'text-[#616161]'}`}>
+                      {Math.round(progress)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#1a1a1a] h-1 rounded-full overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                      className={`h-full rounded-full transition-colors ${progress === 100 ? 'bg-emerald-400' : 'bg-[#E8E8E8]'}`}
+                    />
                   </div>
                 </div>
-              ))}
+
+                {/* Lista de exercícios */}
+                <div className="space-y-2">
+                  {currentDayPlan.exercises.length > 0 ? (
+                    currentDayPlan.exercises.map((ex) => (
+                      <ExerciseItem
+                        key={ex.id}
+                        exercise={ex}
+                        setsDone={setProgress[ex.id] ?? Array(ex.sets).fill(ex.completed)}
+                        loadData={setLoadData[ex.id] ?? []}
+                        onSetToggle={(setIndex) => handleSetToggle(todayId, ex, setIndex)}
+                        onLoadChange={(setIndex, field, val) => handleLoadChange(ex.id, setIndex, field, val)}
+                        isPR={prIds.has(ex.id)}
+                        showEdit={false}
+                      />
+                    ))
+                  ) : (
+                    <div className="py-16 text-center">
+                      <Dumbbell className="w-8 h-8 text-[#1F1F1F] mx-auto mb-3" />
+                      <p className="text-sm text-[#616161]">Nenhum exercício para hoje</p>
+                      <p className="text-xs text-[#3a3a3a] mt-1">Descanso merecido</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column — desktop only for streak/week, squad always */}
+              <div className="space-y-4">
+
+                {/* Streak — hidden on mobile (shown in quick-stats above) */}
+                {(() => {
+                  const { color, badge } = getStreakStyle(diasTreinados);
+                  return (
+                    <div className="hidden lg:block bg-[#111111] border border-[#1F1F1F] rounded-xl p-5"
+                      style={diasTreinados >= 7 ? { borderColor: color + '40' } : undefined}>
+                      <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-3">Sequência</p>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-3xl font-bold tabular-nums" style={{ color }}>{diasTreinados}</span>
+                        <span className="text-sm text-[#616161]">dias</span>
+                      </div>
+                      {badge && (
+                        <p className="text-xs mt-2 font-medium" style={{ color }}>{badge}</p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Squad */}
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
+                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-4">Squad</p>
+                  <div className="space-y-3">
+                    {squad.members.map(member => {
+                      const streak = memberStreaks[member.id] ?? 0;
+                      return (
+                        <div key={member.id} className="flex items-center gap-3">
+                          <div className="relative shrink-0">
+                            <img src={member.avatar} alt={member.name}
+                              className="w-8 h-8 rounded-full bg-[#1a1a1a]"
+                              referrerPolicy="no-referrer" />
+                            {member.isOnline && (
+                              <div className="absolute bottom-0 right-0 w-2 h-2 bg-emerald-400 border border-[#111111] rounded-full" />
+                            )}
+                          </div>
+                          <p className="text-sm text-[#E8E8E8] font-medium truncate flex-1">{member.name}</p>
+                          {streak > 0 && (
+                            <span className="text-xs shrink-0 font-medium" style={{ color: getStreakStyle(streak).color }}>
+                              🔥 {streak}
+                            </span>
+                          )}
+                          {member.role === 'admin' && (
+                            <span className="text-[10px] text-[#616161] shrink-0">admin</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Semana — hidden on mobile (shown in quick-stats above) */}
+                <div className="hidden lg:block bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
+                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-4">Esta Semana</p>
+                  <div className="space-y-2">
+                    {squad.weeklyPlan.map((day, idx) => {
+                      const isToday = idx === todayIndex;
+                      const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
+                      return (
+                        <div key={day.id} className={`flex items-center gap-3 py-1.5 px-2 rounded-lg transition-colors ${isToday ? 'bg-[#1a1a1a]' : ''}`}>
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                            isDone ? 'bg-emerald-500' : isToday ? 'bg-[#2a2a2a] ring-1 ring-emerald-500/40' : 'bg-[#1a1a1a]'
+                          }`}>
+                            {isDone && <CheckCircle2 size={12} className="text-white" />}
+                          </div>
+                          <p className={`text-sm flex-1 ${isToday ? 'text-[#E8E8E8] font-medium' : 'text-[#616161]'}`}>{day.name}</p>
+                          <span className="text-[10px] text-[#3a3a3a]">{day.exercises.length}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
+            </>
+          )}
+
+          {currentView === 'week' && (
+            <>
+              {/* Mobile: horizontal day tabs */}
+              <div className="md:hidden">
+                {/* Day selector */}
+                <div className="flex gap-2 mb-4 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+                  {squad.weeklyPlan.map((day, idx) => {
+                    const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
+                    const isToday = idx === todayIndex;
+                    const isSelected = idx === selectedWeekDay;
+                    return (
+                      <button key={day.id} onClick={() => setSelectedWeekDay(idx)}
+                        className="flex flex-col items-center gap-1 shrink-0 transition-all"
+                        style={{ minWidth: 44 }}>
+                        <div className={`w-9 h-9 rounded-full flex items-center justify-center transition-all text-xs font-semibold
+                          ${isSelected
+                            ? isDone ? 'bg-emerald-500 text-white' : 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500'
+                            : isDone ? 'bg-emerald-500/15 text-emerald-600'
+                            : isToday ? 'bg-[#1a1a1a] text-[#E8E8E8] ring-1 ring-[#2a2a2a]'
+                            : 'bg-transparent text-[#3a3a3a]'
+                          }`}>
+                          {isDone ? <CheckCircle2 size={16} /> : day.name.slice(0, 3)}
+                        </div>
+                        {isToday && (
+                          <div className={`w-1 h-1 rounded-full ${isSelected ? 'bg-emerald-400' : 'bg-[#2a2a2a]'}`} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Selected day content */}
+                {(() => {
+                  const day = squad.weeklyPlan[selectedWeekDay];
+                  if (!day) return null;
+                  const isToday = selectedWeekDay === todayIndex;
+                  return (
+                    <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
+                      {/* Day header */}
+                      <div className="flex items-center justify-between px-4 py-3.5 border-b border-[#1a1a1a]">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <h3 className="text-sm font-semibold text-[#E8E8E8]">{day.name}</h3>
+                            {isToday && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
+                          </div>
+                          <input
+                            type="text"
+                            value={day.focus || ''}
+                            onChange={(e) => updateDayFocus(day.id, e.target.value)}
+                            placeholder="Foco do treino..."
+                            className="bg-transparent border-none text-xs text-[#616161] p-0 focus:ring-0 outline-none placeholder:text-[#2a2a2a] w-full"
+                          />
+                        </div>
+                        <button onClick={() => addExercise(day.id)}
+                          className="w-8 h-8 rounded-full bg-[#1a1a1a] flex items-center justify-center text-[#616161] shrink-0 ml-2">
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                      {/* Exercises */}
+                      <div className="divide-y divide-[#1a1a1a]">
+                        {day.exercises.length > 0 ? (
+                          day.exercises.map(ex => (
+                            <div key={ex.id} className="flex items-center gap-3 px-4 py-3.5">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-[#E8E8E8] truncate">{ex.name}</p>
+                                <p className="text-xs text-[#3a3a3a] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
+                              </div>
+                              <div className="flex gap-2 shrink-0">
+                                <button onClick={() => openEditor(day.id, ex)}
+                                  className="w-8 h-8 rounded-lg bg-[#1a1a1a] flex items-center justify-center text-[#616161]">
+                                  <Edit3 size={13} />
+                                </button>
+                                <button onClick={() => deleteExercise(day.id, ex.id)}
+                                  className="w-8 h-8 rounded-lg bg-[#1a1a1a] flex items-center justify-center text-[#3a3a3a]">
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="py-12 flex flex-col items-center gap-2 text-[#3a3a3a]">
+                            <Dumbbell size={24} />
+                            <p className="text-xs">Dia de descanso</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Desktop: grid view */}
+              <div className="hidden md:grid grid-cols-2 xl:grid-cols-4 gap-4">
+                {squad.weeklyPlan.map((day, idx) => (
+                  <div key={day.id} className={`flex flex-col gap-3 p-4 rounded-xl border transition-all ${idx === todayIndex ? 'bg-[#111111] border-[#2a2a2a]' : 'bg-[#0e0e0e] border-[#1F1F1F]'}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className={`text-sm font-semibold ${idx === todayIndex ? 'text-[#E8E8E8]' : 'text-[#616161]'}`}>{day.name}</h3>
+                          {idx === todayIndex && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
+                        </div>
+                        <div className="relative group/focus mt-0.5">
+                          <input
+                            type="text"
+                            value={day.focus || ''}
+                            onChange={(e) => updateDayFocus(day.id, e.target.value)}
+                            placeholder="Foco..."
+                            className="bg-transparent border-none text-[10px] text-[#616161] p-0 focus:ring-0 outline-none placeholder:text-[#2a2a2a] w-full"
+                          />
+                          {squad.templates.length > 0 && (
+                            <div className="absolute top-full left-0 mt-1 w-44 bg-[#161616] border border-[#1F1F1F] rounded-lg z-30 hidden group-focus-within/focus:block max-h-36 overflow-y-auto">
+                              {squad.templates.map(t => (
+                                <button key={t.id} onClick={() => loadTemplate(day.id, t.id)}
+                                  className="w-full text-left px-3 py-2 text-xs text-[#E8E8E8] hover:bg-[#1F1F1F] transition-colors flex justify-between">
+                                  <span>{t.name}</span>
+                                  <span className="text-[#616161]">{t.exercises.length}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <button onClick={() => addExercise(day.id)}
+                        className="p-1.5 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors shrink-0">
+                        <Plus size={14} />
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 flex-1">
+                      {day.exercises.length > 0 ? (
+                        day.exercises.map(ex => (
+                          <div key={ex.id} onClick={() => openEditor(day.id, ex)}
+                            className="group relative flex items-center gap-2.5 p-2.5 rounded-lg border border-[#1a1a1a] hover:border-[#2a2a2a] bg-[#0A0A0A] transition-all cursor-pointer">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-[#E8E8E8] truncate">{ex.name}</p>
+                              <p className="text-[10px] text-[#3a3a3a] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
+                            </div>
+                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                              <button onClick={(e) => { e.stopPropagation(); openEditor(day.id, ex); }}
+                                className="p-1 text-[#616161] hover:text-[#E8E8E8]"><Edit3 size={11} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); deleteExercise(day.id, ex.id); }}
+                                className="p-1 text-[#616161] hover:text-rose-400"><Trash2 size={11} /></button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="py-8 flex flex-col items-center gap-2 opacity-20">
+                          <Plus size={20} />
+                          <p className="text-[10px]">Vazio</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           {currentView === 'squad' && (
-            <div className="space-y-6">
+            <div className="max-w-lg space-y-4">
 
-              {/* Código de convite — só aparece para o admin */}
+              {/* Código de convite */}
               {squad.members.find(m => m.id === session?.user?.id)?.role === 'admin' && (
-                <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-6">
-                  <h3 className="text-lg font-bold mb-1">Código de Convite</h3>
-                  <p className="text-zinc-500 text-sm mb-4">Compartilhe esse código para alguém entrar no seu squad.</p>
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
+                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-3">Código de Convite</p>
                   <div className="flex items-center gap-3">
-                    <div className="flex-1 bg-zinc-800 rounded-xl px-5 py-3 font-mono text-2xl font-bold tracking-widest text-emerald-400 text-center">
+                    <div className="flex-1 bg-[#0A0A0A] border border-[#1F1F1F] rounded-lg px-4 py-3 font-mono text-lg font-bold tracking-widest text-[#E8E8E8] text-center">
                       {squad.inviteCode || '...'}
                     </div>
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(squad.inviteCode || '');
-                        alert('Código copiado!');
-                      }}
-                      className="p-3 bg-emerald-500 hover:bg-emerald-600 rounded-xl text-white transition-all"
+                      onClick={() => { navigator.clipboard.writeText(squad.inviteCode || ''); alert('Copiado!'); }}
+                      className="p-3 bg-[#1a1a1a] hover:bg-[#222] border border-[#1F1F1F] rounded-lg text-[#616161] hover:text-[#E8E8E8] transition-all"
                     >
-                      <Copy size={20} />
+                      <Copy size={16} />
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* Lista de membros */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
-                <div className="p-8 border-b border-zinc-800 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-xl font-bold mb-1">Membros da Equipe</h3>
-                    <p className="text-zinc-500 text-sm">Gerencie quem tem acesso aos treinos do squad.</p>
+              {/* Membros */}
+              <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-[#1F1F1F]">
+                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium">Membros · {squad.members.length}</p>
+                </div>
+                <div className="divide-y divide-[#1a1a1a]">
+                  {squad.members.map(member => (
+                    <div key={member.id} className="px-5 py-4 flex items-center gap-4 hover:bg-[#161616] transition-colors">
+                      <img src={member.avatar} alt={member.name}
+                        className="w-9 h-9 rounded-full bg-[#1a1a1a] shrink-0" referrerPolicy="no-referrer" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[#E8E8E8] truncate">{member.name}</p>
+                        <p className="text-xs text-[#616161] capitalize">{member.role}</p>
+                      </div>
+                      {member.role === 'admin' && (
+                        <span className="text-[10px] text-[#616161] bg-[#1a1a1a] px-2 py-0.5 rounded font-medium">admin</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentView === 'progress' && (() => {
+            // Datas seg–dom da semana atual (Seg=0 … Dom=6)
+            const todayD = new Date();
+            const dowOffset = (todayD.getDay() + 6) % 7;
+            const weekDates = Array.from({ length: 7 }, (_, i) => {
+              const d = new Date(todayD);
+              d.setDate(todayD.getDate() - dowOffset + i);
+              return localDateStr(d);
+            });
+
+            const { thisWeekByDate, lastWeekByDate, loading } = progressStats;
+
+            const totalDone       = Object.values(thisWeekByDate).reduce((a, b) => a + b, 0);
+            const daysCompleted   = Object.keys(thisWeekByDate).length;
+            const daysPlanned     = squad.weeklyPlan.filter(d => d.exercises.length > 0).length;
+            const consistency     = daysPlanned > 0 ? Math.round((daysCompleted / daysPlanned) * 100) : 0;
+
+            const lastDaysComp    = Object.keys(lastWeekByDate).length;
+            const lastConsistency = daysPlanned > 0 ? Math.round((lastDaysComp / daysPlanned) * 100) : 0;
+            const consistencyDiff = consistency - lastConsistency;
+
+            // Máximo de exercícios num único dia (para escala das barras)
+            const maxCompleted = Math.max(1, ...weekDates.map(d => thisWeekByDate[d] ?? 0));
+
+            const dayLabels = ['S', 'T', 'Q', 'Q', 'S', 'S', 'D'];
+
+            return (
+              <div className="space-y-8">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
+                  <StatCard
+                    title="Total de Exercícios"
+                    value={loading ? '—' : String(totalDone)}
+                    subtitle="Esta semana"
+                    icon={<Dumbbell className="text-emerald-500" />}
+                  />
+                  <StatCard
+                    title="Dias Concluídos"
+                    value={loading ? '—' : `${daysCompleted}/7`}
+                    subtitle="Meta semanal"
+                    icon={<CheckCircle2 className="text-blue-500" />}
+                  />
+                  <StatCard
+                    title="Consistência"
+                    value={loading ? '—' : `${consistency}%`}
+                    subtitle={
+                      loading ? '' :
+                      consistencyDiff === 0 ? 'Igual à semana passada' :
+                      `${consistencyDiff > 0 ? '+' : ''}${consistencyDiff}% que semana passada`
+                    }
+                    icon={<TrendingUp className="text-purple-500" />}
+                  />
+                </div>
+
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-4 md:p-8">
+                  <h3 className="text-base md:text-xl font-bold mb-4 md:mb-6">Histórico de Atividade</h3>
+                  {loading ? (
+                    <div className="h-44 md:h-64 flex items-center justify-center text-sm text-[#616161]">Carregando...</div>
+                  ) : (
+                    <div className="h-44 md:h-64 flex items-end justify-between gap-1.5 md:gap-2">
+                      {weekDates.map((dateKey, i) => {
+                        const completed = thisWeekByDate[dateKey] ?? 0;
+                        const pct = Math.round((completed / maxCompleted) * 100);
+                        const isToday = dateKey === localDateStr(todayD);
+                        return (
+                          <div key={dateKey} className="flex-1 flex flex-col items-center gap-3">
+                            <div className="w-full bg-[#1a1a1a] rounded-t-lg relative group" style={{ height: '100%' }}>
+                              <motion.div
+                                initial={{ height: 0 }}
+                                animate={{ height: pct > 0 ? `${pct}%` : completed === 0 ? '2px' : `${pct}%` }}
+                                className={`w-full rounded-t-lg transition-all group-hover:opacity-80 ${isToday ? 'bg-emerald-500/30 border-t-2 border-emerald-400' : 'bg-emerald-500/15 border-t-2 border-emerald-600'}`}
+                              />
+                              {completed > 0 && (
+                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[#1a1a1a] text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                  {completed} ex
+                                </div>
+                              )}
+                            </div>
+                            <span className={`text-xs font-medium ${isToday ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                              {dayLabels[i]}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Breakdown por dia */}
+                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-[#1F1F1F]">
+                    <p className="text-xs text-[#616161] uppercase tracking-widest font-medium">Dias desta semana</p>
+                  </div>
+                  <div className="divide-y divide-[#1a1a1a]">
+                    {weekDates.map((dateKey, i) => {
+                      const day = squad.weeklyPlan[i];
+                      const completed = thisWeekByDate[dateKey] ?? 0;
+                      const planned   = day?.exercises.length ?? 0;
+                      const isToday   = i === todayIndex;
+                      const isDone    = planned > 0 && completed >= planned;
+                      const dayName   = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'][i];
+                      return (
+                        <div key={dateKey} className={`px-5 py-3.5 flex items-center gap-4 ${isToday ? 'bg-[#161616]' : ''}`}>
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                            isDone ? 'bg-emerald-500' : completed > 0 ? 'bg-emerald-500/30' : 'bg-[#1a1a1a]'
+                          }`}>
+                            {isDone && <CheckCircle2 size={12} className="text-white" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm font-medium ${isToday ? 'text-[#E8E8E8]' : 'text-[#616161]'}`}>
+                              {dayName} {isToday && <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded ml-1">Hoje</span>}
+                            </p>
+                            {day?.focus && <p className="text-xs text-[#3a3a3a] mt-0.5">{day.focus}</p>}
+                          </div>
+                          <span className="text-xs text-[#616161] tabular-nums shrink-0">
+                            {planned > 0 ? `${completed}/${planned}` : '—'}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-                <div className="divide-y divide-zinc-800">
-                  {squad.members.map(member => (
-                    <div key={member.id} className="p-6 flex items-center justify-between hover:bg-zinc-800/30 transition-colors">
-                      <div className="flex items-center gap-4">
-                        <img src={member.avatar} alt={member.name} className="w-12 h-12 rounded-2xl bg-zinc-800" referrerPolicy="no-referrer" />
-                        <div>
-                          <p className="font-bold">{member.name}</p>
-                          <p className="text-zinc-500 text-xs capitalize">{member.role}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-8">
-                        {member.role === 'admin' && (
-                          <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                            Admin
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
 
-          {currentView === 'progress' && (
-            <div className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <StatCard title="Total de Exercícios" value="42" subtitle="Esta semana" icon={<Dumbbell className="text-emerald-500" />} />
-                <StatCard title="Dias Concluídos" value="3/7" subtitle="Meta semanal" icon={<CheckCircle2 className="text-blue-500" />} />
-                <StatCard title="Consistência" value="85%" subtitle="+12% que semana passada" icon={<TrendingUp className="text-purple-500" />} />
+                {/* ── Evolução de Cargas ── */}
+                <LoadTracker
+                  trackedExercises={trackedExercises}
+                  loadHistory={loadHistory}
+                  loadInputs={loadInputs}
+                  savedLoadIds={savedLoadIds}
+                  loading={loadsLoading}
+                  onSetInput={(id, val) => setLoadInputs(prev => ({ ...prev, [id]: val }))}
+                  onSave={saveLoad}
+                  onDelete={deleteTrackedExercise}
+                  onDeleteEntry={deleteLoad}
+                  onCreate={createTrackedExercise}
+                />
               </div>
-
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8">
-                <h3 className="text-xl font-bold mb-6">Histórico de Atividade</h3>
-                <div className="h-64 flex items-end justify-between gap-2">
-                  {[40, 70, 45, 90, 65, 30, 50].map((val, i) => (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-3">
-                      <div className="w-full bg-zinc-800 rounded-t-lg relative group">
-                        <motion.div 
-                          initial={{ height: 0 }}
-                          animate={{ height: `${val}%` }}
-                          className="w-full bg-emerald-500/20 border-t-2 border-emerald-500 rounded-t-lg transition-all group-hover:bg-emerald-500/40"
-                        />
-                        <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-zinc-800 text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                          {val}%
-                        </div>
-                      </div>
-                      <span className="text-xs text-zinc-500 font-medium">
-                        {['S', 'T', 'Q', 'Q', 'S', 'S', 'D'][i]}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {currentView === 'settings' && (
             <Settings
@@ -843,6 +1308,7 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
               squad={squad}
               onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
               onLeaveSquad={() => setSquadId(null)}
+              onSquadJoined={refreshSquad}
               onProfileUpdate={(name, avatarUrl) => setSquad(prev => ({
                 ...prev,
                 members: prev.members.map(m =>
@@ -856,13 +1322,14 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
         </div>
       </main>
 
-      {/* Bottom Nav — só aparece em mobile */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#09090b]/95 backdrop-blur border-t border-zinc-800 flex items-center justify-around px-2 py-2 safe-area-bottom">
-        <MobileNavItem icon={<LayoutDashboard size={22} />} label="Início" active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
-        <MobileNavItem icon={<Calendar size={22} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
-        <MobileNavItem icon={<Users size={22} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
-        <MobileNavItem icon={<TrendingUp size={22} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
-        <MobileNavItem icon={<SettingsIcon size={22} />} label="Config" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
+      {/* Bottom Nav — mobile */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#0A0A0A]/95 backdrop-blur-md border-t border-[#1F1F1F] flex items-center justify-around px-2"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: 8 }}>
+        <MobileNavItem icon={<LayoutDashboard size={21} />} label="Hoje"   active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
+        <MobileNavItem icon={<Calendar size={21} />}        label="Semana" active={currentView === 'week'}      onClick={() => setCurrentView('week')} />
+        <MobileNavItem icon={<Users size={21} />}           label="Equipe" active={currentView === 'squad'}     onClick={() => setCurrentView('squad')} />
+        <MobileNavItem icon={<TrendingUp size={21} />}      label="Stats"  active={currentView === 'progress'}  onClick={() => setCurrentView('progress')} />
+        <MobileNavItem icon={<SettingsIcon size={21} />}    label="Config" active={currentView === 'settings'}  onClick={() => setCurrentView('settings')} />
       </nav>
 
       {/* Editor Modal */}
@@ -948,96 +1415,419 @@ const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
           </div>
         )}
       </AnimatePresence>
+
+      {/* Rest Timer Overlay */}
+      <AnimatePresence>
+        {restTimer && (
+          <motion.div
+            initial={{ y: 80, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 80, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+            className="fixed bottom-24 md:bottom-8 left-1/2 -translate-x-1/2 z-50"
+          >
+            <div className="bg-[#111111] border border-[#1F1F1F] rounded-2xl px-5 py-3.5 flex items-center gap-4 shadow-2xl min-w-[220px]">
+              <div className="flex-1">
+                <p className="text-[10px] text-[#616161] uppercase tracking-widest font-medium mb-0.5">Descanso</p>
+                <div className="flex items-baseline gap-1.5">
+                  <span className={`text-2xl font-bold tabular-nums ${restTimer.remaining <= 5 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {String(Math.floor(restTimer.remaining / 60)).padStart(2, '0')}:{String(restTimer.remaining % 60).padStart(2, '0')}
+                  </span>
+                  <span className="text-xs text-[#3a3a3a]">/ {String(Math.floor(restTimer.total / 60)).padStart(2, '0')}:{String(restTimer.total % 60).padStart(2, '0')}</span>
+                </div>
+                <div className="w-full bg-[#1a1a1a] h-1 rounded-full mt-2 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${restTimer.remaining <= 5 ? 'bg-rose-400' : 'bg-emerald-400'}`}
+                    style={{ width: `${(restTimer.remaining / restTimer.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+              <button
+                onClick={() => setRestTimer(null)}
+                className="px-3 py-2 text-xs text-[#616161] hover:text-[#E8E8E8] bg-[#1a1a1a] hover:bg-[#222] rounded-lg transition-all font-medium"
+              >
+                Pular
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 function MobileNavItem({ icon, label, active, onClick }: { icon: ReactNode, label: string, active?: boolean, onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${active ? 'text-emerald-400' : 'text-zinc-500'}`}
-    >
+    <button onClick={onClick}
+      className="flex flex-col items-center gap-1 px-3 py-1 transition-all relative"
+      style={{ color: active ? '#10b981' : '#505050', minWidth: 56 }}>
+      {active && (
+        <span className="absolute -top-2 left-1/2 -translate-x-1/2 w-5 h-0.5 rounded-full bg-emerald-500" />
+      )}
       {icon}
-      <span className="text-[10px] font-semibold">{label}</span>
+      <span className="text-[10px] font-medium">{label}</span>
     </button>
   );
 }
 
 function NavItem({ icon, label, active, onClick }: { icon: ReactNode, label: string, active?: boolean, onClick: () => void }) {
   return (
-    <button 
-      onClick={onClick}
-      className={`
-        flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group
-        ${active ? 'bg-zinc-800 text-white font-semibold' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50'}
-      `}
-    >
-      <span className={`${active ? 'text-emerald-400' : 'text-zinc-500 group-hover:text-zinc-300'}`}>{icon}</span>
+    <button onClick={onClick}
+      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all
+        ${active ? 'bg-[#1a1a1a] text-[#E8E8E8]' : 'text-[#616161] hover:text-[#E8E8E8] hover:bg-[#141414]'}`}>
+      <span className={active ? 'text-emerald-400' : ''}>{icon}</span>
       <span className="text-sm">{label}</span>
     </button>
   );
 }
 
-function ExerciseItem({ exercise, onToggle, onEdit, showEdit = true }: { exercise: Exercise, onToggle: () => void, onEdit?: () => void, showEdit?: boolean, key?: string }) {
+function formatRestDisplay(rest: string): string {
+  const secs = parseRestSeconds(rest);
+  const m = String(Math.floor(secs / 60)).padStart(2, '0');
+  const s = String(secs % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function ExerciseItem({
+  exercise, setsDone, loadData, onSetToggle, onLoadChange, isPR = false, onEdit, showEdit = true,
+}: {
+  exercise: Exercise;
+  setsDone: boolean[];
+  loadData: Array<{ weight: string; reps: string }>;
+  onSetToggle: (setIndex: number) => void;
+  onLoadChange: (setIndex: number, field: 'weight' | 'reps', val: string) => void;
+  isPR?: boolean;
+  onEdit?: () => void;
+  showEdit?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const doneCount = setsDone.filter(Boolean).length;
+  const allDone = doneCount === exercise.sets;
+  const displayWeight = loadData.find(l => l.weight)?.weight;
+
   return (
-    <motion.div 
-      layout
-      className={`
-        flex items-center gap-4 p-4 rounded-2xl border transition-all cursor-pointer group
-        ${exercise.completed ? 'bg-zinc-900/30 border-zinc-800/50 opacity-60' : 'bg-zinc-900 border-zinc-800 hover:border-zinc-700 shadow-lg'}
-      `}
-      onClick={onToggle}
-    >
-      <div className={`
-        w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all
-        ${exercise.completed ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-zinc-700 group-hover:border-zinc-500'}
-      `}>
-        {exercise.completed && <CheckCircle2 size={14} />}
-      </div>
-      
-      <div className="flex-1">
-        <h5 className={`font-semibold text-sm ${exercise.completed ? 'line-through text-zinc-500' : 'text-zinc-100'}`}>
-          {exercise.name}
-        </h5>
-        <div className="flex items-center gap-3 text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
-          <span>{exercise.sets} Séries</span>
-          <span className="w-1 h-1 bg-zinc-800 rounded-full" />
-          <span>{exercise.reps} Reps</span>
-          <span className="w-1 h-1 bg-zinc-800 rounded-full" />
-          <span className="flex items-center gap-1"><Clock size={10} /> {exercise.rest}</span>
+    <motion.div layout
+      className={`rounded-xl border overflow-hidden transition-all ${allDone ? 'border-[#1a1a1a] opacity-50' : isPR ? 'border-amber-500/40' : 'border-[#252525]'}`}
+      style={{ background: '#141414' }}>
+
+      {/* Compact row */}
+      <div className="flex items-center gap-3 px-3 py-3">
+
+        {/* Icon square */}
+        <div className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 transition-all
+          ${isPR ? 'bg-amber-500/10 border-amber-500/30' : 'bg-[#1c1c1c] border-[#282828]'}`}>
+          {isPR
+            ? <span className="text-sm">🏆</span>
+            : <Dumbbell size={13} className={allDone ? 'text-[#2a2a2a]' : 'text-[#505050]'} />
+          }
         </div>
-        {exercise.notes && (
-          <p className="text-[10px] text-zinc-600 mt-2 italic flex items-center gap-1">
-            <Info size={10} /> {exercise.notes}
+
+        {/* Name + meta — tap to expand inputs */}
+        <button className="flex-1 min-w-0 text-left" onClick={() => setExpanded(v => !v)}>
+          <div className="flex items-center gap-2">
+            <p className={`text-sm font-semibold leading-tight ${allDone ? 'text-[#2a2a2a] line-through' : 'text-[#E0E0E0]'}`}>
+              {exercise.name}
+            </p>
+            {isPR && (
+              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 shrink-0">
+                PR
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] font-medium tracking-wider mt-0.5 flex flex-wrap gap-x-1.5">
+            <span className="text-[#404040]">{exercise.sets} SÉRIES</span>
+            <span className="text-[#282828]">·</span>
+            <span className="text-[#404040]">{exercise.reps} REPS</span>
+            {displayWeight && (
+              <>
+                <span className="text-[#282828]">·</span>
+                <span style={{ color: '#c2410c' }}>{displayWeight} KG</span>
+              </>
+            )}
+            <span className="text-[#282828]">·</span>
+            <span className="text-[#404040]">DESCANSO {formatRestDisplay(exercise.rest)}</span>
           </p>
+        </button>
+
+        {showEdit && onEdit && (
+          <button onClick={e => { e.stopPropagation(); onEdit(); }}
+            className="text-[#282828] hover:text-[#505050] transition-colors shrink-0 mr-1">
+            <Edit3 size={12} />
+          </button>
         )}
+
+        {/* Set squares */}
+        <div className="flex gap-1 shrink-0">
+          {Array.from({ length: exercise.sets }, (_, i) => {
+            const done = setsDone[i] ?? false;
+            return (
+              <button key={i}
+                onClick={() => onSetToggle(i)}
+                className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-all active:scale-90
+                  ${done ? 'bg-emerald-500 border-emerald-500' : 'bg-transparent border-[#2e2e2e] hover:border-[#484848]'}`}>
+                {done && <CheckCircle2 size={11} className="text-[#0A0A0A]" />}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {showEdit && onEdit && (
-        <button 
-          onClick={(e) => { e.stopPropagation(); onEdit(); }}
-          className="p-2 opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-zinc-200 transition-all"
-        >
-          <Edit3 size={16} />
-        </button>
-      )}
+      {/* Expandable per-set inputs */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="overflow-hidden border-t border-[#1e1e1e]">
+            <div className="px-3 py-2.5 space-y-1.5">
+              {Array.from({ length: exercise.sets }, (_, i) => {
+                const done = setsDone[i] ?? false;
+                const load = loadData[i] ?? { weight: '', reps: '' };
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className={`text-[10px] w-12 shrink-0 ${done ? 'text-[#252525]' : 'text-[#505050]'}`}>
+                      Série {i + 1}
+                    </span>
+                    <input
+                      type="number" inputMode="decimal" placeholder="—"
+                      value={load.weight}
+                      onChange={e => onLoadChange(i, 'weight', e.target.value)}
+                      onClick={e => e.stopPropagation()}
+                      className={`flex-1 h-7 bg-[#1a1a1a] border border-[#252525] rounded-lg text-center text-xs tabular-nums outline-none focus:border-[#383838] transition-colors min-w-0 ${done ? 'text-[#2a2a2a]' : 'text-[#C0C0C0]'}`}
+                    />
+                    <span className="text-[9px] text-[#282828] shrink-0">kg ×</span>
+                    <input
+                      type="number" inputMode="numeric" placeholder={exercise.reps}
+                      value={load.reps}
+                      onChange={e => onLoadChange(i, 'reps', e.target.value)}
+                      onClick={e => e.stopPropagation()}
+                      className={`w-12 h-7 bg-[#1a1a1a] border border-[#252525] rounded-lg text-center text-xs tabular-nums outline-none focus:border-[#383838] transition-colors shrink-0 ${done ? 'text-[#2a2a2a]' : 'text-[#C0C0C0]'}`}
+                    />
+                    <span className="text-[9px] text-[#282828] shrink-0">reps</span>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
+  );
+}
+
+// ── LoadTracker ────────────────────────────────────────────────────────────────
+type TrackedExercise = { id: string; name: string };
+type LoadEntry       = { id: string; date: string; load_notes: string };
+
+function LoadTracker({
+  trackedExercises, loadHistory, loadInputs, savedLoadIds, loading,
+  onSetInput, onSave, onDelete, onDeleteEntry, onCreate,
+}: {
+  trackedExercises: TrackedExercise[];
+  loadHistory: Record<string, LoadEntry[]>;
+  loadInputs: Record<string, string>;
+  savedLoadIds: Set<string>;
+  loading: boolean;
+  onSetInput: (id: string, val: string) => void;
+  onSave: (id: string, notes: string) => void;
+  onDelete: (id: string) => void;
+  onDeleteEntry: (exId: string, loadId: string) => void;
+  onCreate: (name: string) => Promise<boolean>;
+}) {
+  const [newName, setNewName] = useState('');
+  const [adding, setAdding]     = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const commit = async () => {
+    const v = newName.trim();
+    if (!v) return;
+    setCreating(true);
+    const ok = await onCreate(v);
+    setCreating(false);
+    if (ok) { setNewName(''); setAdding(false); }
+  };
+
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  };
+
+  // Tendência: compara último e penúltimo registro
+  const trend = (history: LoadEntry[]) => {
+    if (history.length < 2) return null;
+    const last = parseFloat(history[0].load_notes);
+    const prev = parseFloat(history[1].load_notes);
+    if (isNaN(last) || isNaN(prev)) return null;
+    if (last > prev) return '↑';
+    if (last < prev) return '↓';
+    return '→';
+  };
+
+  return (
+    <div>
+      {/* Cabeçalho da seção */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-base font-semibold text-[#E8E8E8]">Evolução de Cargas</h3>
+          <p className="text-xs text-[#616161] mt-0.5">Registre sua carga a cada sessão</p>
+        </div>
+        <button
+          onClick={() => setAdding(true)}
+          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 rounded-lg text-xs text-white font-medium transition-all shrink-0"
+        >
+          <Plus size={13} /> Novo exercício
+        </button>
+      </div>
+
+      {/* Form criar */}
+      {adding && (
+        <div className="bg-[#111111] border border-emerald-500/30 rounded-xl p-4 mb-4 flex gap-2 items-center">
+          <input
+            autoFocus
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setNewName(''); setAdding(false); } }}
+            placeholder="Nome do exercício — ex: Supino"
+            className="flex-1 bg-[#0A0A0A] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-[#E8E8E8] placeholder-[#3a3a3a] outline-none focus:border-emerald-500/50 transition-colors"
+          />
+          <button onClick={commit} disabled={creating}
+            className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 rounded-lg text-xs text-white font-semibold min-w-[64px] transition-all">
+            {creating ? '...' : 'Criar'}
+          </button>
+          <button onClick={() => { setNewName(''); setAdding(false); }}
+            className="px-3 py-2.5 bg-transparent border border-[#1F1F1F] rounded-lg text-xs text-[#616161] hover:text-[#E8E8E8] transition-colors">
+            Cancelar
+          </button>
+        </div>
+      )}
+
+      {loading && (
+        <div className="py-10 text-sm text-[#616161] text-center">Carregando...</div>
+      )}
+
+      {!loading && trackedExercises.length === 0 && !adding && (
+        <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl py-12 flex flex-col items-center gap-3 text-[#3a3a3a]">
+          <Dumbbell size={32} />
+          <p className="text-sm text-[#616161]">Nenhum exercício cadastrado.</p>
+          <button onClick={() => setAdding(true)} className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">
+            + Adicionar primeiro exercício
+          </button>
+        </div>
+      )}
+
+      {/* Grid de cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {trackedExercises.map(ex => {
+          const history  = loadHistory[ex.id] ?? [];
+          const inputVal = loadInputs[ex.id] ?? '';
+          const isSaved  = savedLoadIds.has(ex.id);
+          const t        = trend(history);
+          const latest   = history[0];
+
+          return (
+            <div key={ex.id} className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5 flex flex-col gap-4 hover:border-[#2a2a2a] transition-colors">
+
+              {/* Cabeçalho do card */}
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-base font-bold text-[#E8E8E8] capitalize leading-tight">{ex.name}</p>
+                  {latest && (
+                    <p className="text-xs text-[#616161] mt-0.5">
+                      Último: <span className="text-emerald-400 font-medium">{latest.load_notes}</span>
+                      <span className="text-[#3a3a3a]"> · {formatDate(latest.date)}</span>
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {t && (
+                    <span className={`text-sm font-bold leading-none ${t === '↑' ? 'text-emerald-400' : t === '↓' ? 'text-red-400' : 'text-[#616161]'}`}>
+                      {t}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => { if (confirm(`Excluir "${ex.name}" e todo o histórico?`)) onDelete(ex.id); }}
+                    className="text-[#2a2a2a] hover:text-red-400 transition-colors p-1"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Input novo registro */}
+              <div className="flex gap-2">
+                <input
+                  value={inputVal}
+                  onChange={e => onSetInput(ex.id, e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') onSave(ex.id, inputVal); }}
+                  placeholder="Ex: 14kg · 3×10"
+                  className="flex-1 bg-[#0A0A0A] border border-[#1F1F1F] focus:border-emerald-500/40 rounded-lg px-3 py-2 text-sm text-[#E8E8E8] placeholder-[#2a2a2a] outline-none transition-colors"
+                />
+                <button
+                  onClick={() => onSave(ex.id, inputVal)}
+                  disabled={!inputVal.trim()}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold shrink-0 transition-all disabled:opacity-30 ${
+                    isSaved
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-[#1a1a1a] text-[#9a9a9a] border border-[#2a2a2a] hover:text-white hover:bg-[#222] hover:border-[#3a3a3a]'
+                  }`}
+                >
+                  {isSaved ? '✓' : 'Salvar'}
+                </button>
+              </div>
+
+              {/* Histórico em chips */}
+              {history.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-[#3a3a3a] uppercase tracking-widest mb-2">Histórico</p>
+                  <div className="flex flex-col gap-1.5">
+                    {history.slice(0, 5).map((entry, idx) => {
+                      const prevEntry  = history[idx + 1];
+                      const curr = parseFloat(entry.load_notes);
+                      const prev = prevEntry ? parseFloat(prevEntry.load_notes) : NaN;
+                      const hasDiff = !isNaN(curr) && !isNaN(prev) && curr !== prev;
+
+                      return (
+                        <div key={entry.id} className="flex items-center gap-3 group">
+                          <span className="text-[11px] text-[#3a3a3a] w-9 shrink-0 tabular-nums">{formatDate(entry.date)}</span>
+                          <span className={`text-sm flex-1 ${idx === 0 ? 'text-[#E8E8E8] font-semibold' : 'text-[#616161]'}`}>
+                            {entry.load_notes}
+                          </span>
+                          {hasDiff && (
+                            <span className={`text-[11px] font-medium shrink-0 ${curr > prev ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {curr > prev ? '+' : ''}{(curr - prev).toFixed(1)}kg
+                            </span>
+                          )}
+                          <button
+                            onClick={() => onDeleteEntry(ex.id, entry.id)}
+                            className="opacity-0 group-hover:opacity-100 text-[#2a2a2a] hover:text-red-400 transition-all shrink-0"
+                          >
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 function StatCard({ title, value, subtitle, icon }: { title: string, value: string, subtitle: string, icon: ReactNode }) {
   return (
-    <div className="bg-zinc-900/50 border border-zinc-800 p-6 rounded-3xl">
-      <div className="flex items-center justify-between mb-4">
-        <div className="p-2 bg-zinc-800 rounded-xl">
-          {icon}
-        </div>
-        <Info size={16} className="text-zinc-600" />
+    <div className="bg-[#111111] border border-[#1F1F1F] p-4 md:p-5 rounded-xl">
+      <div className="flex items-center gap-2 mb-3 md:mb-4 text-[#616161]">
+        {icon}
+        <p className="text-[10px] md:text-xs font-medium uppercase tracking-widest truncate">{title}</p>
       </div>
-      <p className="text-zinc-500 text-sm mb-1">{title}</p>
-      <h4 className="text-3xl font-bold mb-1">{value}</h4>
-      <p className="text-xs text-zinc-600">{subtitle}</p>
+      <h4 className="text-2xl md:text-3xl font-bold text-[#E8E8E8] mb-1 tabular-nums">{value}</h4>
+      <p className="text-[10px] md:text-xs text-[#616161] leading-tight">{subtitle}</p>
     </div>
   );
 }

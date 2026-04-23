@@ -19,40 +19,32 @@ export function Onboarding({ userId, onComplete }: OnboardingProps) {
   const [erro, setErro] = useState('');
 
   const criarSquad = async () => {
-  console.log('1. iniciando, userId:', userId);
   if (!nome.trim()) { setErro('Digite um nome para o squad'); return; }
   setLoading(true); setErro('');
 
   const inviteCode = gerarCodigo();
-  console.log('2. criando squad...');
 
   const { data: squad, error: squadErr } = await supabase
     .from('squads')
     .insert({ name: nome, created_by: userId, invite_code: inviteCode })
-    .select()
+    .select('id')
     .single();
 
-  console.log('3. squad:', squad, 'erro:', squadErr);
   if (squadErr) { setErro('Erro squad: ' + squadErr.message); setLoading(false); return; }
 
-  console.log('4. criando membro...');
   const { error: memberErr } = await supabase
     .from('squad_members')
     .insert({ squad_id: squad.id, user_id: userId, role: 'admin' });
 
-  console.log('5. membro erro:', memberErr);
   if (memberErr) { setErro('Erro membro: ' + memberErr.message); setLoading(false); return; }
 
-  console.log('6. criando dias...');
   const dias = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
   const { error: daysErr } = await supabase
     .from('workout_days')
     .insert(dias.map((name, i) => ({ squad_id: squad.id, name, day_order: i })));
 
-  console.log('7. dias erro:', daysErr);
   if (daysErr) { setErro('Erro dias: ' + daysErr.message); setLoading(false); return; }
 
-  console.log('8. concluído!');
   setLoading(false);
   onComplete();
 };
@@ -63,7 +55,7 @@ export function Onboarding({ userId, onComplete }: OnboardingProps) {
 
     const { data: squad, error: squadErr } = await supabase
       .from('squads')
-      .select()
+      .select('id')
       .eq('invite_code', codigo.toUpperCase())
       .single();
 
