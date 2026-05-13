@@ -18,11 +18,14 @@ import {
   Edit3,
   RotateCcw,
   Dumbbell,
+  Sparkles,
 } from 'lucide-react';
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, Exercise } from './types';
 import { Settings } from './components/Settings';
+import { AIChat } from './components/AIChat';
+import type { WorkoutExercise } from './services/gemini';
 
 
 // Retorna "YYYY-MM-DD" no fuso local (evita bug UTC-3 após 21h)
@@ -528,6 +531,39 @@ useEffect(() => {
     }));
   };
 
+  const applyAIWorkout = async (dayName: string, focus: string, aiExercises: WorkoutExercise[]) => {
+    const day = squad.weeklyPlan.find(
+      d => d.name.toLowerCase() === dayName.toLowerCase()
+    );
+    if (!day) return;
+
+    // Deleta exercícios existentes do dia
+    await Promise.all(day.exercises.map(ex => deleteExerciseFromDB(ex.id)));
+
+    // Cria os novos exercícios
+    const newExercises: Exercise[] = aiExercises.map(ex => ({
+      id: crypto.randomUUID(),
+      name: ex.name,
+      sets: ex.sets,
+      reps: ex.reps,
+      rest: ex.rest,
+      notes: ex.notes,
+      completed: false,
+    }));
+
+    await Promise.all(newExercises.map(ex => addExerciseToDB(day.id, ex)));
+
+    // Atualiza o foco do dia
+    await supabase.from('workout_days').update({ focus }).eq('id', day.id);
+
+    setSquad(prev => ({
+      ...prev,
+      weeklyPlan: prev.weeklyPlan.map(d =>
+        d.id === day.id ? { ...d, focus, exercises: newExercises } : d
+      ),
+    }));
+  };
+
   const todayIndex = (new Date().getDay() + 6) % 7; // Adjust to Monday = 0
   const todayId = squad.weeklyPlan[todayIndex]?.id ?? squad.weeklyPlan[0]?.id ?? '';
 
@@ -729,6 +765,7 @@ useEffect(() => {
           <NavItem icon={<Calendar size={16} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
           <NavItem icon={<Users size={16} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
           <NavItem icon={<TrendingUp size={16} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
+          <NavItem icon={<Sparkles size={16} />} label="IA" active={currentView === 'ia'} onClick={() => setCurrentView('ia')} />
         </nav>
 
         <div className="px-3">
@@ -748,6 +785,7 @@ useEffect(() => {
                 {currentView === 'squad' && 'Equipe'}
                 {currentView === 'progress' && 'Progresso'}
                 {currentView === 'settings' && 'Configurações'}
+                {currentView === 'ia' && 'Kronos AI'}
               </h2>
               <p className="text-xs text-[#616161] mt-0.5 capitalize">
                 {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
@@ -1319,6 +1357,15 @@ useEffect(() => {
               }))}
             />
           )}
+
+          {currentView === 'ia' && (
+            <AIChat
+              squad={squad}
+              streak={diasTreinados}
+              progressStats={progressStats}
+              onCreateWorkout={applyAIWorkout}
+            />
+          )}
         </div>
       </main>
 
@@ -1329,6 +1376,7 @@ useEffect(() => {
         <MobileNavItem icon={<Calendar size={21} />}        label="Semana" active={currentView === 'week'}      onClick={() => setCurrentView('week')} />
         <MobileNavItem icon={<Users size={21} />}           label="Equipe" active={currentView === 'squad'}     onClick={() => setCurrentView('squad')} />
         <MobileNavItem icon={<TrendingUp size={21} />}      label="Stats"  active={currentView === 'progress'}  onClick={() => setCurrentView('progress')} />
+        <MobileNavItem icon={<Sparkles size={21} />}        label="IA"     active={currentView === 'ia'}         onClick={() => setCurrentView('ia')} />
         <MobileNavItem icon={<SettingsIcon size={21} />}    label="Config" active={currentView === 'settings'}  onClick={() => setCurrentView('settings')} />
       </nav>
 

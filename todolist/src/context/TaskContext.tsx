@@ -191,7 +191,8 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       time: updated.time ?? null,
       status: updated.status,
       updated_at: updated.updatedAt,
-    }).eq('id', updated.id);
+    }).eq('id', updated.id).eq('user_id', session.user.id)
+      .then(({ error }) => { if (error) console.error('[tasks] update error:', error.message); });
   }, [session?.user?.id]);
 
   const deleteTask = useCallback((id: string) => {
@@ -238,8 +239,10 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     const newStatus: TaskStatus = task.status === 'pending' ? 'done' : 'pending';
     const updatedAt = new Date().toISOString();
     dispatch({ type: 'TOGGLE_STATUS', payload: id });
-    supabase.from('tasks').update({ status: newStatus, updated_at: updatedAt }).eq('id', id);
-  }, [state.tasks]);
+    supabase.from('tasks').update({ status: newStatus, updated_at: updatedAt })
+      .eq('id', id).eq('user_id', session!.user.id)
+      .then(({ error }) => { if (error) console.error('[tasks] toggle error:', error.message); });
+  }, [state.tasks, session]);
 
   const setFilter = useCallback((filter: FilterStatus) => {
     dispatch({ type: 'SET_FILTER', payload: filter });
