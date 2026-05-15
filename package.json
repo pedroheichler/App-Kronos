@@ -7,7 +7,8 @@
     "dev:finance": "npm run dev --prefix Finance",
     "dev:treino":  "npm run dev --prefix Treino",
     "dev:todo":    "npm run dev --prefix todolist",
-    "build": "npm run build --prefix hub && npm run build --prefix Finance && npm run build --prefix Treino && npm run build --prefix todolist"
+    "build": "npm run build --prefix hub && npm run build --prefix Finance && npm run build --prefix Treino && npm run build --prefix todolist",
+    "deploy": "npm run build && node deploy.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"

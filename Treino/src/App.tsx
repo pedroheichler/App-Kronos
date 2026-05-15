@@ -35,6 +35,7 @@ function localDateStr(d: Date = new Date()): string {
 
 // Calcula sequência de treinos consecutivos respeitando dias de descanso.
 // trainingDays: índices dos dias com treino (Seg=0…Dom=6). Vazio = todos os dias contam.
+// Se treinou num dia de descanso (ex: trocou o dia), conta normalmente.
 function calcStreak(dates: string[], trainingDays: number[] = []): number {
   if (!dates.length) return 0;
 
@@ -46,21 +47,22 @@ function calcStreak(dates: string[], trainingDays: number[] = []): number {
   let d = new Date();
 
   for (let i = 0; i < 400; i++) {
-    const dateStr  = localDateStr(d);
-    const dow      = (d.getDay() + 6) % 7; // JS Dom=0 → converte para Seg=0
+    const dateStr     = localDateStr(d);
+    const dow         = (d.getDay() + 6) % 7;
+    const isPlanned   = allDays || trainingDays.includes(dow);
+    const doneOnDay   = doneSet.has(dateStr);
 
-    if (!allDays && !trainingDays.includes(dow)) {
-      // Dia de descanso — não conta nem quebra a sequência
+    if (!isPlanned && !doneOnDay) {
+      // Dia de descanso sem treino → pula sem quebrar
       d.setDate(d.getDate() - 1);
       continue;
     }
 
-    if (doneSet.has(dateStr)) {
+    if (doneOnDay) {
       streak++;
     } else if (dateStr !== todayStr) {
-      break; // Dia de treino passado perdido → sequência quebrada
+      break; // Dia de treino planejado sem registro → quebra
     }
-    // Se for hoje e não treinou ainda → não penaliza, continua contando para trás
 
     d.setDate(d.getDate() - 1);
   }
@@ -125,6 +127,8 @@ export default function App() {
   const [checkingSquad, setCheckingSquad] = useState(true);
   const [squadLoading, setSquadLoading] = useState(false);
   const [selectedWeekDay, setSelectedWeekDay] = useState<number>(() => (new Date().getDay() + 6) % 7);
+  const [activeDayIndex, setActiveDayIndex] = useState<number>(() => (new Date().getDay() + 6) % 7);
+  const [showDayPicker, setShowDayPicker] = useState(false);
   const [diasTreinados, setDiasTreinados] = useState(0);
   const [memberStreaks, setMemberStreaks] = useState<Record<string, number>>({});
   const [progressStats, setProgressStats] = useState<{
@@ -746,7 +750,8 @@ useEffect(() => {
     }));
   };
 
-  const currentDayPlan = squad.weeklyPlan.find(d => d.id === todayId) ?? squad.weeklyPlan[0] ?? { id: '', name: '', focus: '', exercises: [] };
+  const currentDayPlan = squad.weeklyPlan[activeDayIndex] ?? squad.weeklyPlan.find(d => d.id === todayId) ?? squad.weeklyPlan[0] ?? { id: '', name: '', focus: '', exercises: [] };
+  const activeDayId = currentDayPlan.id;
   const completedCount = currentDayPlan.exercises.filter(ex => ex.completed).length;
   const totalCount = currentDayPlan.exercises.length;
   const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
@@ -854,7 +859,7 @@ useEffect(() => {
                       <input
                         type="text"
                         value={currentDayPlan.focus || ''}
-                        onChange={(e) => updateDayFocus(todayId, e.target.value)}
+                        onChange={(e) => updateDayFocus(activeDayId, e.target.value)}
                         placeholder="FOCO DO TREINO"
                         className="bg-transparent border-none text-[#E8E8E8] p-0 focus:ring-0 outline-none placeholder:text-[#1e1e1e] w-full uppercase"
                         style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 900, fontSize: 'clamp(1.6rem, 5vw, 2.4rem)', letterSpacing: '0.06em' }}
@@ -862,7 +867,7 @@ useEffect(() => {
                       {squad.templates.length > 0 && (
                         <div className="absolute top-full left-0 mt-2 w-56 bg-[#161616] border border-[#1F1F1F] rounded-xl z-30 hidden group-focus-within:block max-h-44 overflow-y-auto">
                           {squad.templates.map(t => (
-                            <button key={t.id} onClick={() => loadTemplate(todayId, t.id)}
+                            <button key={t.id} onClick={() => loadTemplate(activeDayId, t.id)}
                               className="w-full text-left px-4 py-2.5 text-sm text-[#E8E8E8] hover:bg-[#1F1F1F] transition-colors flex justify-between items-center">
                               <span>{t.name}</span>
                               <span className="text-xs text-[#616161]">{t.exercises.length} exs</span>
@@ -871,11 +876,50 @@ useEffect(() => {
                         </div>
                       )}
                     </div>
-                    <button onClick={() => resetDay(todayId)}
-                      className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors ml-3 shrink-0"
-                      title="Resetar">
-                      <RotateCcw size={15} />
-                    </button>
+                    <div className="flex items-center gap-1 ml-3 shrink-0">
+                      {/* Trocar dia */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setShowDayPicker(v => !v)}
+                          className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors"
+                          title="Trocar treino">
+                          <Calendar size={15} />
+                        </button>
+                        <AnimatePresence>
+                          {showDayPicker && (
+                            <motion.div
+                              initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                              animate={{ opacity: 1, scale: 1, y: 0 }}
+                              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                              transition={{ duration: 0.12 }}
+                              className="absolute right-0 top-full mt-1 bg-[#161616] border border-[#252525] rounded-xl z-40 overflow-hidden shadow-xl min-w-[160px]">
+                              {squad.weeklyPlan.map((day, idx) => {
+                                const isActive = idx === activeDayIndex;
+                                const isToday = idx === todayIndex;
+                                const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
+                                return (
+                                  <button key={day.id}
+                                    onClick={() => { setActiveDayIndex(idx); setShowDayPicker(false); }}
+                                    className={`w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors
+                                      ${isActive ? 'bg-[#1e1e1e] text-emerald-400' : 'text-[#616161] hover:bg-[#1a1a1a] hover:text-[#E8E8E8]'}`}>
+                                    <span>{day.name}</span>
+                                    <div className="flex items-center gap-1.5">
+                                      {isDone && <span className="text-[10px] text-emerald-600">✓</span>}
+                                      {isToday && <span className="text-[9px] text-emerald-500 font-bold">HOJE</span>}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                      <button onClick={() => resetDay(activeDayId)}
+                        className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors"
+                        title="Resetar">
+                        <RotateCcw size={15} />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex items-end justify-between mb-3">
@@ -905,7 +949,7 @@ useEffect(() => {
                         exercise={ex}
                         setsDone={setProgress[ex.id] ?? Array(ex.sets).fill(ex.completed)}
                         loadData={setLoadData[ex.id] ?? []}
-                        onSetToggle={(setIndex) => handleSetToggle(todayId, ex, setIndex)}
+                        onSetToggle={(setIndex) => handleSetToggle(activeDayId, ex, setIndex)}
                         onLoadChange={(setIndex, field, val) => handleLoadChange(ex.id, setIndex, field, val)}
                         isPR={prIds.has(ex.id)}
                         showEdit={false}
