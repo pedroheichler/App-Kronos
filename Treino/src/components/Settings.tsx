@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Copy } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { Squad } from '../types';
 
@@ -341,6 +342,56 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
               >
                 {squadStatus === 'saving' ? 'Salvando...' : squadStatus === 'saved' ? 'Salvo!' : 'Salvar'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Equipe — código de convite + membros */}
+      {hasSquad && (
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8">
+          <h2 className="text-xl font-bold text-zinc-100 mb-6">Equipe</h2>
+
+          {isAdmin && (
+            <div className="mb-5">
+              <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                Código de Convite
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 bg-zinc-800 rounded-xl px-4 py-3 font-mono text-lg font-bold tracking-widest text-zinc-100 text-center">
+                  {squad.inviteCode || '...'}
+                </div>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(squad.inviteCode || ''); }}
+                  className="p-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-zinc-400 hover:text-zinc-100 transition-all"
+                  title="Copiar código"
+                >
+                  <Copy size={16} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="border border-zinc-800 rounded-2xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-zinc-800">
+              <p className="text-xs text-zinc-500 uppercase tracking-widest font-medium">
+                Membros · {squad.members.length}
+              </p>
+            </div>
+            <div className="divide-y divide-zinc-800/60">
+              {squad.members.map(member => (
+                <div key={member.id} className="px-4 py-3.5 flex items-center gap-3">
+                  <img src={member.avatar} alt={member.name}
+                    className="w-9 h-9 rounded-full bg-zinc-800 shrink-0" referrerPolicy="no-referrer" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-zinc-100 truncate">{member.name}</p>
+                    <p className="text-xs text-zinc-500 capitalize">{member.role}</p>
+                  </div>
+                  {member.role === 'admin' && (
+                    <span className="text-[10px] text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded font-medium">admin</span>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

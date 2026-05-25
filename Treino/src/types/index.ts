@@ -41,4 +41,4 @@ export interface Squad {
   templates: WorkoutTemplate[];
 }
 
-export type ViewType = 'dashboard' | 'week' | 'squad' | 'progress' | 'settings' | 'ia';
+export type ViewType = 'dashboard' | 'week' | 'progress' | 'settings' | 'ia';

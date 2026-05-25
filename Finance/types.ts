@@ -11,6 +11,16 @@ export interface Transaction {
   date: string;
   type: TransactionType;
   category: string;
+  notes?: string;
+  isRecurring?: boolean;
+  installmentTotal?: number;
+  installmentCurrent?: number;
+}
+
+export interface SpendingGoal {
+  id: string;
+  category: string;
+  monthlyLimit: number;
 }
 
 export interface Investment {
@@ -20,6 +30,8 @@ export interface Investment {
   currentValue: number;
   type: 'Ações' | 'FIIs' | 'Renda Fixa' | 'Cripto' | 'Outros';
   date: string;
+  cryptoId?: string;
+  quantity?: number;
 }
 
 export interface DashboardSummary {

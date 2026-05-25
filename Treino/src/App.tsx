@@ -8,13 +8,11 @@ import {
 import {
   LayoutDashboard,
   Calendar,
-  Users,
   TrendingUp,
   Settings as SettingsIcon,
   Plus,
   CheckCircle2,
   Trash2,
-  Copy,
   Edit3,
   RotateCcw,
   Dumbbell,
@@ -768,7 +766,6 @@ useEffect(() => {
         <nav className="flex flex-col gap-0.5 px-3 flex-1">
           <NavItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
           <NavItem icon={<Calendar size={16} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
-          <NavItem icon={<Users size={16} />} label="Equipe" active={currentView === 'squad'} onClick={() => setCurrentView('squad')} />
           <NavItem icon={<TrendingUp size={16} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
           <NavItem icon={<Sparkles size={16} />} label="IA" active={currentView === 'ia'} onClick={() => setCurrentView('ia')} />
         </nav>
@@ -787,7 +784,6 @@ useEffect(() => {
               <h2 className="text-lg font-semibold text-[#E8E8E8]">
                 {currentView === 'dashboard' && 'Hoje'}
                 {currentView === 'week' && 'Semana'}
-                {currentView === 'squad' && 'Equipe'}
                 {currentView === 'progress' && 'Progresso'}
                 {currentView === 'settings' && 'Configurações'}
                 {currentView === 'ia' && 'Kronos AI'}
@@ -1200,51 +1196,6 @@ useEffect(() => {
             </>
           )}
 
-          {currentView === 'squad' && (
-            <div className="max-w-lg space-y-4">
-
-              {/* Código de convite */}
-              {squad.members.find(m => m.id === session?.user?.id)?.role === 'admin' && (
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
-                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-3">Código de Convite</p>
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 bg-[#0A0A0A] border border-[#1F1F1F] rounded-lg px-4 py-3 font-mono text-lg font-bold tracking-widest text-[#E8E8E8] text-center">
-                      {squad.inviteCode || '...'}
-                    </div>
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(squad.inviteCode || ''); alert('Copiado!'); }}
-                      className="p-3 bg-[#1a1a1a] hover:bg-[#222] border border-[#1F1F1F] rounded-lg text-[#616161] hover:text-[#E8E8E8] transition-all"
-                    >
-                      <Copy size={16} />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Membros */}
-              <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-[#1F1F1F]">
-                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium">Membros · {squad.members.length}</p>
-                </div>
-                <div className="divide-y divide-[#1a1a1a]">
-                  {squad.members.map(member => (
-                    <div key={member.id} className="px-5 py-4 flex items-center gap-4 hover:bg-[#161616] transition-colors">
-                      <img src={member.avatar} alt={member.name}
-                        className="w-9 h-9 rounded-full bg-[#1a1a1a] shrink-0" referrerPolicy="no-referrer" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-[#E8E8E8] truncate">{member.name}</p>
-                        <p className="text-xs text-[#616161] capitalize">{member.role}</p>
-                      </div>
-                      {member.role === 'admin' && (
-                        <span className="text-[10px] text-[#616161] bg-[#1a1a1a] px-2 py-0.5 rounded font-medium">admin</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
           {currentView === 'progress' && (() => {
             // Datas seg–dom da semana atual (Seg=0 … Dom=6)
             const todayD = new Date();
@@ -1418,7 +1369,6 @@ useEffect(() => {
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: 8 }}>
         <MobileNavItem icon={<LayoutDashboard size={21} />} label="Hoje"   active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
         <MobileNavItem icon={<Calendar size={21} />}        label="Semana" active={currentView === 'week'}      onClick={() => setCurrentView('week')} />
-        <MobileNavItem icon={<Users size={21} />}           label="Equipe" active={currentView === 'squad'}     onClick={() => setCurrentView('squad')} />
         <MobileNavItem icon={<TrendingUp size={21} />}      label="Stats"  active={currentView === 'progress'}  onClick={() => setCurrentView('progress')} />
         <MobileNavItem icon={<Sparkles size={21} />}        label="IA"     active={currentView === 'ia'}         onClick={() => setCurrentView('ia')} />
         <MobileNavItem icon={<SettingsIcon size={21} />}    label="Config" active={currentView === 'settings'}  onClick={() => setCurrentView('settings')} />

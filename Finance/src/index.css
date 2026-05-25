@@ -1,7 +1,41 @@
 @import "tailwindcss";
 
+:root {
+  --bg-app:    #0A0A0A;
+  --bg-card:   #111111;
+  --bg-inner:  #1a1a1a;
+  --bg-inner2: #222222;
+  --bg-hover:  #161616;
+  --bg-deep:   #0e0e0e;
+  --bd:        #1F1F1F;
+  --bd-sub:    #2a2a2a;
+  --bd-modal:  #262626;
+  --bd-input:  #333333;
+  --tx-1:      #E8E8E8;
+  --tx-2:      #616161;
+  --tx-3:      #3a3a3a;
+  --tx-modal:  #F5F5F5;
+}
+
+.light-theme {
+  --bg-app:    #F0F4F8;
+  --bg-card:   #FFFFFF;
+  --bg-inner:  #F5F7FA;
+  --bg-inner2: #EBEEF2;
+  --bg-hover:  #F8FAFB;
+  --bg-deep:   #EDF0F4;
+  --bd:        #E2E8F0;
+  --bd-sub:    #CBD5E1;
+  --bd-modal:  #E2E8F0;
+  --bd-input:  #CBD5E1;
+  --tx-1:      #0F172A;
+  --tx-2:      #64748B;
+  --tx-3:      #94A3B8;
+  --tx-modal:  #0F172A;
+}
+
 html, body, #root {
-  background: #0A0A0A;
+  background: var(--bg-app);
   margin: 0;
   min-height: 100vh;
 }
