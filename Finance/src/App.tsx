@@ -20,6 +20,8 @@ import {
   UserCircle2,
   LogOut,
   X,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   BarChart,
@@ -59,6 +61,12 @@ const CRYPTOS = [
 const App: React.FC = () => {
   // ---- Tema ----
   const [isLight, setIsLight] = useState(() => localStorage.getItem('finance-theme') === 'light');
+  const [hideBalance, setHideBalance] = useState(() => localStorage.getItem('finance-hide-balance') === 'true');
+  const toggleHideBalance = () => setHideBalance(prev => {
+    const next = !prev;
+    localStorage.setItem('finance-hide-balance', next ? 'true' : 'false');
+    return next;
+  });
   const [activeTab, setActiveTab] = useState<'home' | 'transactions' | 'budget' | 'profile'>('home');
   const [showAddMenu, setShowAddMenu] = useState(false);
   const toggleTheme = () => setIsLight(prev => {
@@ -441,6 +449,7 @@ const App: React.FC = () => {
     const isCrypto = invModalType === 'Cripto';
     const cryptoMeta = CRYPTOS.find(c => c.id === invModalCryptoId);
     const payload = {
+      user_id: session.user.id,
       name: isCrypto
         ? `${cryptoMeta?.name ?? invModalCryptoId} - ${cryptoMeta?.symbol ?? ''}`
         : (formData.get("name") as string),
@@ -525,7 +534,7 @@ const App: React.FC = () => {
   };
 
   const formatCurrency = (val: number) =>
-    val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    hideBalance ? "R$ ••••" : val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
   if (authLoading) return <div style={{ color: '#fff', padding: 40, background: '#0A0A0A', minHeight: '100vh' }}>Carregando...</div>;
 
@@ -565,6 +574,10 @@ const App: React.FC = () => {
               className="hidden md:flex bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white px-4 py-2 rounded-lg text-sm font-semibold items-center gap-2 transition-all active:scale-95">
               <Plus size={16} /> Gasto
             </button>
+            <button onClick={toggleHideBalance} title={hideBalance ? 'Mostrar saldo' : 'Esconder saldo'}
+              className="p-1.5 rounded-lg text-[var(--tx-2)] hover:text-[var(--tx-1)] hover:bg-[var(--bg-inner)] transition-all">
+              {hideBalance ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
             <button onClick={toggleTheme} title={isLight ? 'Modo escuro' : 'Modo claro'}
               className="p-1.5 rounded-lg text-[var(--tx-2)] hover:text-[var(--tx-1)] hover:bg-[var(--bg-inner)] transition-all">
               {isLight ? <Moon size={16} /> : <Sun size={16} />}
@@ -583,7 +596,10 @@ const App: React.FC = () => {
             <div className={`rounded-2xl p-5 ${summary.balance >= 0 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-rose-500/10 border border-rose-500/20'}`}>
               <div className="flex items-center justify-between mb-1">
                 <p className="text-xs font-semibold text-[var(--tx-2)] uppercase tracking-wider">Saldo do Mês</p>
-                <CircleDollarSign size={16} className={summary.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
+                <button onClick={toggleHideBalance} title={hideBalance ? 'Mostrar saldo' : 'Esconder saldo'}
+                  className={`p-1 -m-1 ${summary.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {hideBalance ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
               </div>
               <p className={`text-3xl font-black mb-4 ${summary.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {formatCurrency(summary.balance)}
@@ -832,6 +848,15 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="bg-[var(--bg-card)] border border-[var(--bd)] rounded-2xl overflow-hidden">
+              <button onClick={toggleHideBalance} className="w-full flex items-center justify-between px-5 py-4 border-b border-[var(--bd)] hover:bg-[var(--bg-inner)] transition-all">
+                <div className="flex items-center gap-3">
+                  {hideBalance ? <EyeOff size={18} className="text-[var(--tx-2)]" /> : <Eye size={18} className="text-[var(--tx-2)]" />}
+                  <span className="text-sm font-medium text-[var(--tx-1)]">Esconder saldos</span>
+                </div>
+                <div className={`w-10 h-5 rounded-full transition-colors relative ${hideBalance ? 'bg-emerald-500' : 'bg-[var(--bg-inner)]'}`}>
+                  <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${hideBalance ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </div>
+              </button>
               <button onClick={toggleTheme} className="w-full flex items-center justify-between px-5 py-4 border-b border-[var(--bd)] hover:bg-[var(--bg-inner)] transition-all">
                 <div className="flex items-center gap-3">
                   {isLight ? <Moon size={18} className="text-[var(--tx-2)]" /> : <Sun size={18} className="text-[var(--tx-2)]" />}
@@ -857,21 +882,21 @@ const App: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-8">
           <DashboardCard
             title="Ganho Total"
-            value={`R$ ${summary.totalIncome.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+            value={formatCurrency(summary.totalIncome)}
             icon={<TrendingUp size={16} />}
             accentColor="#4ade80"
             trend={{ value: `${((summary.totalIncome / (summary.totalIncome + summary.totalExpenses || 1)) * 100).toFixed(0)}%`, isUp: true }}
           />
           <DashboardCard
             title="Gastos Totais"
-            value={`R$ ${summary.totalExpenses.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+            value={formatCurrency(summary.totalExpenses)}
             icon={<TrendingDown size={16} />}
             accentColor="#f87171"
             trend={{ value: summary.monthlyTrend.value, isUp: summary.monthlyTrend.isUp }}
           />
           <DashboardCard
             title="Saldo"
-            value={`R$ ${summary.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}
+            value={formatCurrency(summary.balance)}
             icon={<CircleDollarSign size={16} />}
             accentColor="#38bdf8"
           />

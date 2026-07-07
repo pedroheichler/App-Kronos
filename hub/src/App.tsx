@@ -181,6 +181,13 @@ function AppSelector({ session }: { session: Session }) {
       cor: "#a78bfa",
       icon: "↗",
     },
+    {
+      nome: "Dieta",
+      descricao: "Hidratação e refeições",
+      url: "/dieta/",
+      cor: "#38bdf8",
+      icon: "🍎",
+    },
   ];
 
   const userName = session.user.email?.split("@")[0] ?? "você";

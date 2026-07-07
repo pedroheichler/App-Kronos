@@ -56,6 +56,11 @@ const QUICK_ACTIONS = [
 
 function renderMarkdown(text: string) {
   return text
+    // Escapa HTML primeiro — impede injeção de tags vindas da resposta da IA
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/^### (.*$)/gm, '<h3 class="text-sm font-bold text-[#E8E8E8] mt-3 mb-1">$1</h3>')
@@ -160,7 +165,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
         isRetryable = true;
         setLastFailedMsg(trimmed);
       } else if (status === 401 || msg.includes('API_KEY') || msg.includes('api key') || msg.includes('auth')) {
-        msg = 'Chave de API inválida. Verifique VITE_ANTHROPIC_API_KEY no .env.';
+        msg = 'Erro de autenticação com a IA. Faça login novamente ou verifique a Edge Function.';
       }
 
       setMessages(prev =>

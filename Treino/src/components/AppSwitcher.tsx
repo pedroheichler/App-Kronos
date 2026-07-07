@@ -4,10 +4,12 @@ import { supabase } from '../services/supabase';
 const APPS = [
   { id: 'finance', nome: 'Finance', url: '/finance/' },
   { id: 'treino', nome: 'Treino', url: '/treino/' },
+  { id: 'dieta', nome: 'Dieta', url: '/dieta/' },
+  { id: 'todolist', nome: 'Todolist', url: '/todolist/' },
 ];
 
 interface AppSwitcherProps {
-  currentApp: 'finance' | 'treino';
+  currentApp: 'finance' | 'treino' | 'dieta' | 'todolist';
   userEmail?: string;
 }
 

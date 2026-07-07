@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Squad } from '../types';
+import { supabase } from './supabase';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -46,10 +47,17 @@ const CREATE_WORKOUT_TOOL: Anthropic.Tool = {
   },
 };
 
-function getClient(): Anthropic {
-  const key = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
-  if (!key) throw new Error('Chave VITE_ANTHROPIC_API_KEY não configurada no arquivo .env');
-  return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
+// As chamadas passam pela Edge Function `anthropic-proxy` do Supabase:
+// a chave real da Anthropic fica em secret no servidor, nunca no navegador.
+async function getClient(): Promise<Anthropic> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Você precisa estar logado para usar a IA.');
+  return new Anthropic({
+    apiKey: 'proxy', // ignorada — a função injeta a chave real no servidor
+    baseURL: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/anthropic-proxy`,
+    dangerouslyAllowBrowser: true,
+    defaultHeaders: { Authorization: `Bearer ${session.access_token}` },
+  });
 }
 
 export function buildWorkoutContext(
@@ -105,7 +113,7 @@ export async function* sendMessage(
   newMessage: string,
   workoutContext: string
 ): AsyncGenerator<MessageChunk> {
-  const client = getClient();
+  const client = await getClient();
 
   const systemInstruction = `${SYSTEM_PROMPT}\n\nContexto atual do usuário:\n${workoutContext}`;
 
