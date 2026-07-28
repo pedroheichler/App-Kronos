@@ -2,6 +2,8 @@
 
 # ⚡ Kronos
 
+https://kronos-app.online/
+
 **Plataforma pessoal de produtividade e saúde**
 
 Cinco aplicativos integrados em um só lugar: finanças, treino, dieta, tarefas e um hub central.
