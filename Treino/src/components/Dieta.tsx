@@ -18,7 +18,7 @@ import {
   Wheat,
   Sparkles,
 } from 'lucide-react';
-import { compressImage, analyzeFoodPhoto } from '../services/foodAI';
+import { compressImage, analyzeFoodPhoto, analyzeFoodText, type FoodAnalysis } from '../services/foodAI';
 
 // "YYYY-MM-DD" no fuso local
 function localDateStr(d: Date = new Date()): string {
@@ -61,8 +61,15 @@ export function Dieta({ session }: DietaProps) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiNote, setAiNote] = useState<string | null>(null);
+  const [foodDescription, setFoodDescription] = useState('');
+  // Guarda a última tentativa para o botão "Tentar de novo"
+  type LastAction =
+    | { kind: 'photo'; img: { base64: string; mediaType: 'image/jpeg' } }
+    | { kind: 'text'; text: string };
+  const [lastAction, setLastAction] = useState<LastAction | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const today = localDateStr();
 
@@ -71,9 +78,10 @@ export function Dieta({ session }: DietaProps) {
     if (!session) return;
     const load = async () => {
       setLoading(true);
+      setError(null);
       const weekAgo = localDateStr(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000));
 
-      const [{ data: water }, { data: mealsData }, { data: settings }] = await Promise.all([
+      const [waterRes, mealsRes, settingsRes] = await Promise.all([
         supabase
           .from('water_intake')
           .select('id, ml, date')
@@ -93,8 +101,15 @@ export function Dieta({ session }: DietaProps) {
           .maybeSingle(),
       ]);
 
-      if (water) setWaterEntries(water as WaterEntry[]);
-      if (mealsData) setMeals(mealsData as Meal[]);
+      const loadErr = waterRes.error ?? mealsRes.error ?? settingsRes.error;
+      if (loadErr) {
+        console.error('Erro ao carregar dados da dieta:', loadErr);
+        setError(`Não foi possível carregar seus dados: ${loadErr.message}`);
+      }
+
+      if (waterRes.data) setWaterEntries(waterRes.data as WaterEntry[]);
+      if (mealsRes.data) setMeals(mealsRes.data as Meal[]);
+      const settings = settingsRes.data;
       if (settings) {
         setWaterGoal(settings.water_goal_ml ?? 2000);
         setWaterGoalInput(String(settings.water_goal_ml ?? 2000));
@@ -145,7 +160,7 @@ export function Dieta({ session }: DietaProps) {
       setTimeout(() => setCelebrate(false), 2500);
     }
 
-    const { data } = await supabase
+    const { data, error: insertErr } = await supabase
       .from('water_intake')
       .insert({ user_id: session.user.id, ml, date: today })
       .select('id, ml, date')
@@ -153,7 +168,10 @@ export function Dieta({ session }: DietaProps) {
     if (data) {
       setWaterEntries(prev => prev.map(e => (e.id === tempId ? (data as WaterEntry) : e)));
     } else {
+      // Reverte o registro otimista e avisa o usuário
       setWaterEntries(prev => prev.filter(e => e.id !== tempId));
+      console.error('Erro ao registrar água:', insertErr);
+      setError(`Não foi possível registrar a água: ${insertErr?.message ?? 'erro desconhecido'}`);
     }
   };
 
@@ -171,9 +189,13 @@ export function Dieta({ session }: DietaProps) {
     const goal = Math.max(500, Number(waterGoalInput) || 2000);
     setWaterGoal(goal);
     setEditingWaterGoal(false);
-    await supabase
+    const { error: upErr } = await supabase
       .from('diet_settings')
       .upsert({ user_id: session.user.id, water_goal_ml: goal, calorie_goal: calorieGoal, protein_goal: proteinGoal });
+    if (upErr) {
+      console.error('Erro ao salvar meta de água:', upErr);
+      setError(`Não foi possível salvar a meta: ${upErr.message}`);
+    }
   };
 
   // ── Ações: refeições ──
@@ -183,33 +205,37 @@ export function Dieta({ session }: DietaProps) {
     const cal = mealCal ? Number(mealCal) : null;
     const prot = mealProt ? Number(mealProt) : null;
     const carbs = mealCarbs ? Number(mealCarbs) : null;
-    const { data } = await supabase
+    const { data, error: insertErr } = await supabase
       .from('meals')
       .insert({ user_id: session.user.id, date: today, name: mealName.trim(), calories: cal, protein: prot, carbs })
       .select('id, name, calories, protein, carbs')
       .single();
+
+    if (insertErr) {
+      console.error('Erro ao salvar refeição:', insertErr);
+      setAiError(`Não foi possível salvar: ${insertErr.message}`);
+      return;
+    }
+
     if (data) setMeals(prev => [...prev, data as Meal]);
     setMealName('');
     setMealCal('');
     setMealProt('');
     setMealCarbs('');
+    setFoodDescription('');
     setAiNote(null);
     setAiError(null);
+    setLastAction(null);
     setShowMealForm(false);
   };
 
-  // ── IA: analisar foto da refeição ──
-  const handlePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // permite escolher a mesma foto de novo
-    if (!file) return;
-
+  // ── IA: preencher macros (por foto ou por descrição) ──
+  const runAnalysis = async (analyze: () => Promise<FoodAnalysis>) => {
     setAiLoading(true);
     setAiError(null);
     setAiNote(null);
     try {
-      const { base64, mediaType } = await compressImage(file);
-      const result = await analyzeFoodPhoto(base64, mediaType);
+      const result = await analyze();
       setMealName(result.name);
       setMealCal(String(result.calories));
       setMealProt(String(result.protein));
@@ -218,22 +244,63 @@ export function Dieta({ session }: DietaProps) {
         `Confiança ${result.confidence}${result.notes ? ` — ${result.notes}` : ''}. Ajuste os valores se precisar.`
       );
     } catch (err: any) {
-      setAiError(err?.message ?? 'Erro ao analisar a foto. Tente novamente.');
+      setAiError(err?.message ?? 'Erro ao analisar. Tente novamente.');
     } finally {
       setAiLoading(false);
     }
   };
 
+  const handlePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite escolher a mesma foto de novo
+    if (!file) return;
+
+    try {
+      const img = await compressImage(file);
+      setLastAction({ kind: 'photo', img });
+      await runAnalysis(() => analyzeFoodPhoto(img.base64, img.mediaType));
+    } catch (err: any) {
+      setAiError(err?.message ?? 'Não foi possível ler a imagem.');
+    }
+  };
+
+  const handleDescribeFood = async () => {
+    const desc = foodDescription.trim();
+    if (!desc || aiLoading) return;
+    setLastAction({ kind: 'text', text: desc });
+    await runAnalysis(() => analyzeFoodText(desc));
+  };
+
+  const retryLastAnalysis = () => {
+    if (!lastAction) return;
+    if (lastAction.kind === 'photo') {
+      runAnalysis(() => analyzeFoodPhoto(lastAction.img.base64, lastAction.img.mediaType));
+    } else {
+      runAnalysis(() => analyzeFoodText(lastAction.text));
+    }
+  };
+
   const deleteMeal = async (id: string) => {
+    const removed = meals.find(m => m.id === id);
     setMeals(prev => prev.filter(m => m.id !== id));
-    await supabase.from('meals').delete().eq('id', id).eq('user_id', session.user.id);
+    const { error: delErr } = await supabase
+      .from('meals').delete().eq('id', id).eq('user_id', session.user.id);
+    if (delErr && removed) {
+      console.error('Erro ao remover refeição:', delErr);
+      setMeals(prev => [...prev, removed]); // devolve à lista
+      setError(`Não foi possível remover: ${delErr.message}`);
+    }
   };
 
   const saveMacros = async () => {
     setEditingMacros(false);
-    await supabase
+    const { error: upErr } = await supabase
       .from('diet_settings')
       .upsert({ user_id: session.user.id, water_goal_ml: waterGoal, calorie_goal: calorieGoal, protein_goal: proteinGoal });
+    if (upErr) {
+      console.error('Erro ao salvar metas:', upErr);
+      setError(`Não foi possível salvar as metas: ${upErr.message}`);
+    }
   };
 
   // ── Anel SVG ──
@@ -251,6 +318,16 @@ export function Dieta({ session }: DietaProps) {
 
   return (
     <div className="space-y-6">
+      {/* Erro geral */}
+      {error && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-rose-500/30 bg-rose-500/10">
+          <p className="flex-1 text-sm text-rose-400">{error}</p>
+          <button onClick={() => setError(null)} className="text-rose-400/60 hover:text-rose-400 transition-colors">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Celebração */}
       <AnimatePresence>
         {celebrate && (
@@ -561,6 +638,36 @@ export function Dieta({ session }: DietaProps) {
                   onChange={handlePhotoSelected}
                   className="hidden"
                 />
+                {/* Descrever com palavras */}
+                <div className="flex gap-2">
+                  <input
+                    value={foodDescription}
+                    onChange={e => setFoodDescription(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.preventDefault(); handleDescribeFood(); }
+                    }}
+                    disabled={aiLoading}
+                    placeholder="Ex: 2 ovos e um pão, 100g de amendoim, um McChicken..."
+                    className="flex-1 bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-2.5 text-sm text-[#E8E8E8] outline-none focus:border-sky-500 transition-all placeholder:text-zinc-700 disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleDescribeFood}
+                    disabled={aiLoading || !foodDescription.trim()}
+                    title="Calcular macros com IA"
+                    className="shrink-0 flex items-center gap-1.5 px-4 bg-sky-500 hover:bg-sky-400 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold transition-all"
+                  >
+                    {aiLoading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                    Calcular
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-[#1F1F1F]" />
+                  <span className="text-[10px] text-[#3a3a3a] uppercase tracking-widest">ou</span>
+                  <div className="flex-1 h-px bg-[#1F1F1F]" />
+                </div>
+
                 <button
                   type="button"
                   onClick={() => photoInputRef.current?.click()}
@@ -569,17 +676,28 @@ export function Dieta({ session }: DietaProps) {
                 >
                   {aiLoading ? (
                     <>
-                      <Loader2 size={16} className="animate-spin" /> Analisando foto...
+                      <Loader2 size={16} className="animate-spin" /> Analisando...
                     </>
                   ) : (
                     <>
-                      <Camera size={16} /> Tirar foto do prato — IA preenche os macros
+                      <Camera size={16} /> Tirar foto do prato
                     </>
                   )}
                 </button>
 
                 {aiError && (
-                  <p className="text-xs text-rose-400 bg-rose-400/10 rounded-lg px-3 py-2">{aiError}</p>
+                  <div className="flex items-center gap-2 text-xs text-rose-400 bg-rose-400/10 rounded-lg px-3 py-2">
+                    <span className="flex-1">{aiError}</span>
+                    {lastAction && !aiLoading && (
+                      <button
+                        type="button"
+                        onClick={retryLastAnalysis}
+                        className="shrink-0 flex items-center gap-1 font-semibold text-rose-300 hover:text-white bg-rose-500/20 hover:bg-rose-500/40 px-2.5 py-1 rounded-md transition-all"
+                      >
+                        <RotateCcw size={11} /> Tentar de novo
+                      </button>
+                    )}
+                  </div>
                 )}
                 {aiNote && (
                   <p className="text-xs text-sky-400 bg-sky-400/10 rounded-lg px-3 py-2 flex items-start gap-1.5">

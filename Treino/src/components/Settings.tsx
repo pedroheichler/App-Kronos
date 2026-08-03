@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { Copy } from 'lucide-react';
+import { Copy, LogOut } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { Squad } from '../types';
 
 interface SettingsProps {
   session: any;
   squad: Squad;
+  /** true quando é o espaço de treino individual (sem equipe) */
+  isPersonal?: boolean;
   onSquadUpdate: (name: string, icon: string) => void;
   onProfileUpdate: (name: string, avatarUrl: string) => void;
   onLeaveSquad: () => void;
@@ -54,8 +56,11 @@ function SquadSetup({ userId, onComplete }: { userId: string; onComplete: () => 
 
   return (
     <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8 max-w-md">
-      <h2 className="text-xl font-bold text-zinc-100 mb-2">Entrar em um Squad</h2>
-      <p className="text-sm text-zinc-500 mb-6">Crie um squad novo ou entre num existente com código de convite.</p>
+      <h2 className="text-xl font-bold text-zinc-100 mb-2">Treinar com amigos</h2>
+      <p className="text-sm text-zinc-500 mb-6">
+        Opcional — você já pode treinar sozinho normalmente. Crie um squad ou entre num
+        existente para acompanhar a sequência da galera e dividir o mesmo plano de treino.
+      </p>
 
       {modo === 'escolha' && (
         <div className="flex flex-col gap-3">
@@ -111,9 +116,23 @@ function publicUrl(bucket: string, path: string) {
   return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`;
 }
 
-export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLeaveSquad, onSquadJoined }: SettingsProps) {
+export function Settings({ session, squad, isPersonal, onSquadUpdate, onProfileUpdate, onLeaveSquad, onSquadJoined }: SettingsProps) {
   const isAdmin = squad.members.find(m => m.id === session?.user?.id)?.role === 'admin';
-  const hasSquad = !!squad.id;
+  // Espaço pessoal não conta como equipe: as seções de squad ficam ocultas
+  const hasSquad = !!squad.id && !isPersonal;
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState('');
+
+  // Esc fecha a confirmação (a não ser que já esteja saindo)
+  useEffect(() => {
+    if (!showLeaveConfirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !leaving) setShowLeaveConfirm(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showLeaveConfirm, leaving]);
 
   // Perfil
   const [displayName, setDisplayName] = useState('');
@@ -405,25 +424,75 @@ export function Settings({ session, squad, onSquadUpdate, onProfileUpdate, onLea
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold text-zinc-200">Sair do squad</p>
-            <p className="text-xs text-zinc-500 mt-0.5">Você perderá acesso aos treinos e precisará entrar novamente com um código.</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Você volta a treinar sozinho no seu espaço pessoal. Para retornar ao squad, vai precisar do código de convite.</p>
           </div>
           <button
-            onClick={async () => {
-              if (!confirm('Tem certeza que quer sair do squad?')) return;
-              const { error } = await supabase
-                .from('squad_members')
-                .delete()
-                .eq('user_id', session.user.id)
-                .eq('squad_id', squad.id);
-              if (error) { alert('Erro ao sair do squad.'); return; }
-              onLeaveSquad();
-            }}
+            onClick={() => { setLeaveError(''); setShowLeaveConfirm(true); }}
             className="ml-6 shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 px-5 py-2 rounded-xl text-sm font-semibold transition-all"
           >
             Sair do squad
           </button>
         </div>
       </div>}
+
+      {/* Confirmação de saída do squad */}
+      {showLeaveConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={() => !leaving && setShowLeaveConfirm(false)}
+        >
+          <div
+            className="bg-[#111111] border border-zinc-800 rounded-3xl w-full max-w-sm p-7 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-5">
+              <LogOut size={20} className="text-red-400" />
+            </div>
+
+            <h3 className="text-lg font-bold text-zinc-100 mb-2">Sair do squad?</h3>
+            <p className="text-sm text-zinc-500 leading-relaxed mb-1">
+              Você vai deixar <span className="text-zinc-300 font-medium">{squad.name || 'o squad'}</span> e
+              voltar a treinar sozinho no seu espaço pessoal.
+            </p>
+            <p className="text-xs text-zinc-600 mb-6">
+              Seu histórico continua salvo. Para voltar, vai precisar do código de convite.
+            </p>
+
+            {leaveError && (
+              <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2 mb-4">{leaveError}</p>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLeaveConfirm(false)}
+                disabled={leaving}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-zinc-400 hover:text-zinc-100 bg-zinc-800/60 hover:bg-zinc-800 transition-all disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  setLeaving(true);
+                  setLeaveError('');
+                  const { error } = await supabase
+                    .from('squad_members')
+                    .delete()
+                    .eq('user_id', session.user.id)
+                    .eq('squad_id', squad.id);
+                  setLeaving(false);
+                  if (error) { setLeaveError('Não foi possível sair: ' + error.message); return; }
+                  setShowLeaveConfirm(false);
+                  onLeaveSquad();
+                }}
+                disabled={leaving}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white bg-red-500 hover:bg-red-600 transition-all disabled:opacity-60"
+              >
+                {leaving ? 'Saindo...' : 'Sim, sair'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

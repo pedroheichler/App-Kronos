@@ -23,11 +23,9 @@ copyDir('hub/dist', OUT);
 copyDir('Finance/dist',  path.join(OUT, 'finance'));
 copyDir('Treino/dist',   path.join(OUT, 'treino'));
 copyDir('todolist/dist', path.join(OUT, 'todolist'));
-copyDir('Dieta/dist',    path.join(OUT, 'dieta'));
 
 console.log('✓ deploy/ pronto:');
 console.log('  /          → Hub');
 console.log('  /finance/  → Finance');
-console.log('  /treino/   → Treino');
+console.log('  /treino/   → Treino (inclui Dieta)');
 console.log('  /todolist/ → Todolist');
-console.log('  /dieta/    → Dieta');

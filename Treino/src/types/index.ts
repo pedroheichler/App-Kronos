@@ -41,4 +41,7 @@ export interface Squad {
   templates: WorkoutTemplate[];
 }
 
-export type ViewType = 'dashboard' | 'week' | 'progress' | 'settings' | 'ia';
+export type ViewType = 'treino' | 'dieta' | 'ia' | 'settings';
+
+/** Sub-abas dentro da área de Treino */
+export type TreinoTab = 'hoje' | 'semana' | 'progresso';

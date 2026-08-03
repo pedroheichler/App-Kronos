@@ -176,17 +176,10 @@ function AppSelector({ session }: { session: Session }) {
     },
     {
       nome: "Treino",
-      descricao: "Treinos e squad",
+      descricao: "Treinos, dieta e squad",
       url: "/treino/",
       cor: "#a78bfa",
       icon: "↗",
-    },
-    {
-      nome: "Dieta",
-      descricao: "Hidratação e refeições",
-      url: "/dieta/",
-      cor: "#38bdf8",
-      icon: "🍎",
     },
   ];
 

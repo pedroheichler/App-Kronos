@@ -17,12 +17,14 @@ import {
   RotateCcw,
   Dumbbell,
   Sparkles,
+  Apple,
 } from 'lucide-react';
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
-import { Squad, ViewType, Exercise } from './types';
+import { Squad, ViewType, TreinoTab, Exercise } from './types';
 import { Settings } from './components/Settings';
 import { AIChat } from './components/AIChat';
+import { Dieta } from './components/Dieta';
 import type { WorkoutExercise } from './services/gemini';
 
 
@@ -85,6 +87,56 @@ function parseRestSeconds(rest: string): number {
   return s ? parseInt(s[1]) : 60;
 }
 
+// Descobre em qual espaço o usuário treina: uma equipe de verdade tem
+// prioridade sobre o espaço pessoal. Retorna null se ele não tiver nenhum.
+async function findWorkspace(userId: string): Promise<{ id: string; personal: boolean } | null> {
+  const { data } = await supabase
+    .from('squad_members')
+    .select('squad_id, squads(is_personal)')
+    .eq('user_id', userId);
+
+  const rows = (data ?? []).map(r => {
+    // O join vem como objeto (FK many-to-one), mas o tipo gerado diz array
+    const rel = r.squads as unknown as { is_personal: boolean } | { is_personal: boolean }[] | null;
+    const squad = Array.isArray(rel) ? rel[0] : rel;
+    return { id: r.squad_id as string, personal: !!squad?.is_personal };
+  });
+
+  const team = rows.find(r => !r.personal);
+  return team ?? rows.find(r => r.personal) ?? null;
+}
+
+// Cria um espaço de treino individual (sem equipe) com os 7 dias da semana.
+// Devolve o id, ou null se algo falhar.
+async function createPersonalWorkspace(userId: string): Promise<string | null> {
+  const { data: squad, error: squadErr } = await supabase
+    .from('squads')
+    .insert({ name: 'Meu Treino', created_by: userId, is_personal: true })
+    .select('id')
+    .single();
+
+  if (squadErr || !squad) {
+    console.error('Erro ao criar espaço pessoal:', squadErr);
+    return null;
+  }
+
+  const { error: memberErr } = await supabase
+    .from('squad_members')
+    .insert({ squad_id: squad.id, user_id: userId, role: 'admin' });
+
+  if (memberErr) {
+    console.error('Erro ao entrar no espaço pessoal:', memberErr);
+    return null;
+  }
+
+  const dias = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+  await supabase
+    .from('workout_days')
+    .insert(dias.map((name, i) => ({ squad_id: squad.id, name, day_order: i })));
+
+  return squad.id;
+}
+
 function DevLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -118,10 +170,12 @@ export default function App() {
     weeklyPlan: [],
     templates: [],
   });
-  const [currentView, setCurrentView] = useState<ViewType>('dashboard');
+  const [currentView, setCurrentView] = useState<ViewType>('treino');
+  const [treinoTab, setTreinoTab] = useState<TreinoTab>('hoje');
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
+  const [isPersonal, setIsPersonal] = useState(false);
   const [checkingSquad, setCheckingSquad] = useState(true);
   const [squadLoading, setSquadLoading] = useState(false);
   const [selectedWeekDay, setSelectedWeekDay] = useState<number>(() => (new Date().getDay() + 6) % 7);
@@ -171,15 +225,21 @@ export default function App() {
     return;
   }
 
-  supabase
-    .from('squad_members')
-    .select('squad_id')
-    .eq('user_id', session.user.id)
-    .limit(1)
-    .then(({ data }) => {
-      setSquadId(data?.[0]?.squad_id || null);
-      setCheckingSquad(false);
-    });
+  const resolveWorkspace = async () => {
+    const ws = await findWorkspace(session.user.id);
+
+    if (ws) {
+      setSquadId(ws.id);
+      setIsPersonal(ws.personal);
+    } else {
+      // Sem nenhum espaço: cria um pessoal para treinar sozinho
+      setSquadId(await createPersonalWorkspace(session.user.id));
+      setIsPersonal(true);
+    }
+    setCheckingSquad(false);
+  };
+
+  resolveWorkspace();
 }, [session?.user?.id]);
 
 useEffect(() => {
@@ -352,11 +412,11 @@ useEffect(() => {
   }, [session?.user?.id]);
 
   useEffect(() => {
-    if (currentView === 'progress') fetchProgressStats();
-  }, [currentView, fetchProgressStats]);
+    if (currentView === 'treino' && treinoTab === 'progresso') fetchProgressStats();
+  }, [currentView, treinoTab, fetchProgressStats]);
 
   useEffect(() => {
-    if (currentView !== 'progress' || !session?.user?.id) return;
+    if (currentView !== 'treino' || treinoTab !== 'progresso' || !session?.user?.id) return;
     setLoadsLoading(true);
 
     supabase
@@ -392,7 +452,7 @@ useEffect(() => {
         setLoadInputs(inputs);
         setLoadsLoading(false);
       });
-  }, [currentView, session?.user?.id]); // eslint-disable-line
+  }, [currentView, treinoTab, session?.user?.id]); // eslint-disable-line
 
   // Initialize setProgress when squad weeklyPlan loads
   useEffect(() => {
@@ -452,15 +512,17 @@ useEffect(() => {
     return <DevLogin />;
   }
 
-  const refreshSquad = () => {
-    supabase
-      .from('squad_members')
-      .select('squad_id')
-      .eq('user_id', session.user.id)
-      .limit(1)
-      .then(({ data }) => {
-        setSquadId(data?.[0]?.squad_id || null);
-      });
+  const refreshSquad = async () => {
+    const ws = await findWorkspace(session.user.id);
+
+    if (ws) {
+      setSquadId(ws.id);
+      setIsPersonal(ws.personal);
+    } else {
+      // Saiu da última equipe: volta para um espaço pessoal
+      setSquadId(await createPersonalWorkspace(session.user.id));
+      setIsPersonal(true);
+    }
   };
 
   const openEditor = (dayId: string, exercise: Exercise) => {
@@ -759,14 +821,13 @@ useEffect(() => {
       {/* Sidebar — só aparece em telas md+ */}
       <aside className="hidden md:flex w-52 border-r border-[#1F1F1F] flex-col py-6 bg-[#0A0A0A] z-20 shrink-0">
         <div className="px-5 mb-8">
-          <p className="text-[10px] text-[#616161] font-medium uppercase tracking-widest mb-1.5">Squad</p>
+          <p className="text-[10px] text-[#616161] font-medium uppercase tracking-widest mb-1.5">{isPersonal ? 'Treino' : 'Squad'}</p>
           <p className="text-sm font-semibold text-[#E8E8E8] truncate">{squad.name || 'Kronos'}</p>
         </div>
 
         <nav className="flex flex-col gap-0.5 px-3 flex-1">
-          <NavItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
-          <NavItem icon={<Calendar size={16} />} label="Semana" active={currentView === 'week'} onClick={() => setCurrentView('week')} />
-          <NavItem icon={<TrendingUp size={16} />} label="Progresso" active={currentView === 'progress'} onClick={() => setCurrentView('progress')} />
+          <NavItem icon={<Dumbbell size={16} />} label="Treino" active={currentView === 'treino'} onClick={() => setCurrentView('treino')} />
+          <NavItem icon={<Apple size={16} />} label="Dieta" active={currentView === 'dieta'} onClick={() => setCurrentView('dieta')} />
           <NavItem icon={<Sparkles size={16} />} label="IA" active={currentView === 'ia'} onClick={() => setCurrentView('ia')} />
         </nav>
 
@@ -779,12 +840,11 @@ useEffect(() => {
       <main className="flex-1 overflow-y-auto relative">
         <div className="max-w-5xl mx-auto p-4 md:p-8 pb-28 md:pb-10">
           {/* Header */}
-          <header className="flex items-center justify-between mb-5 md:mb-8">
+          <header className="flex items-center justify-between mb-5">
             <div>
               <h2 className="text-lg font-semibold text-[#E8E8E8]">
-                {currentView === 'dashboard' && 'Hoje'}
-                {currentView === 'week' && 'Semana'}
-                {currentView === 'progress' && 'Progresso'}
+                {currentView === 'treino' && 'Treino'}
+                {currentView === 'dieta' && 'Dieta'}
                 {currentView === 'settings' && 'Configurações'}
                 {currentView === 'ia' && 'Kronos AI'}
               </h2>
@@ -795,7 +855,31 @@ useEffect(() => {
             <AppSwitcher currentApp="treino" userEmail={session?.user?.email} />
           </header>
 
-          {currentView === 'dashboard' && squadLoading && (
+          {/* Sub-abas do Treino */}
+          {currentView === 'treino' && (
+            <div className="flex gap-1 p-1 mb-6 bg-[#111111] border border-[#1F1F1F] rounded-xl w-full sm:w-fit">
+              {([
+                { id: 'hoje',      label: 'Hoje',      icon: <LayoutDashboard size={14} /> },
+                { id: 'semana',    label: 'Semana',    icon: <Calendar size={14} /> },
+                { id: 'progresso', label: 'Progresso', icon: <TrendingUp size={14} /> },
+              ] as { id: TreinoTab; label: string; icon: ReactNode }[]).map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setTreinoTab(tab.id)}
+                  className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                    treinoTab === tab.id
+                      ? 'bg-[#1F1F1F] text-[#E8E8E8]'
+                      : 'text-[#616161] hover:text-[#E8E8E8]'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {currentView === 'treino' && treinoTab === 'hoje' && squadLoading && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-pulse">
               <div className="lg:col-span-2 space-y-4">
                 <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-48" />
@@ -809,7 +893,7 @@ useEffect(() => {
             </div>
           )}
 
-          {currentView === 'dashboard' && !squadLoading && (
+          {currentView === 'treino' && treinoTab === 'hoje' && !squadLoading && (
             <>
             {/* Mobile: quick stats row (streak + mini-week) */}
             <div className="flex gap-3 mb-4 lg:hidden">
@@ -982,7 +1066,8 @@ useEffect(() => {
                   );
                 })()}
 
-                {/* Squad */}
+                {/* Squad — só faz sentido quando treina com outras pessoas */}
+                {!isPersonal && (
                 <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
                   <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-4">Squad</p>
                   <div className="space-y-3">
@@ -1012,6 +1097,7 @@ useEffect(() => {
                     })}
                   </div>
                 </div>
+                )}
 
                 {/* Semana — hidden on mobile (shown in quick-stats above) */}
                 <div className="hidden lg:block bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
@@ -1039,7 +1125,7 @@ useEffect(() => {
             </>
           )}
 
-          {currentView === 'week' && (
+          {currentView === 'treino' && treinoTab === 'semana' && (
             <>
               {/* Mobile: horizontal day tabs */}
               <div className="md:hidden">
@@ -1196,7 +1282,7 @@ useEffect(() => {
             </>
           )}
 
-          {currentView === 'progress' && (() => {
+          {currentView === 'treino' && treinoTab === 'progresso' && (() => {
             // Datas seg–dom da semana atual (Seg=0 … Dom=6)
             const todayD = new Date();
             const dowOffset = (todayD.getDay() + 6) % 7;
@@ -1339,8 +1425,9 @@ useEffect(() => {
             <Settings
               session={session}
               squad={squad}
+              isPersonal={isPersonal}
               onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
-              onLeaveSquad={() => setSquadId(null)}
+              onLeaveSquad={refreshSquad}
               onSquadJoined={refreshSquad}
               onProfileUpdate={(name, avatarUrl) => setSquad(prev => ({
                 ...prev,
@@ -1352,6 +1439,8 @@ useEffect(() => {
               }))}
             />
           )}
+
+          {currentView === 'dieta' && <Dieta session={session} />}
 
           {currentView === 'ia' && (
             <AIChat
@@ -1367,11 +1456,10 @@ useEffect(() => {
       {/* Bottom Nav — mobile */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#0A0A0A]/95 backdrop-blur-md border-t border-[#1F1F1F] flex items-center justify-around px-2"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: 8 }}>
-        <MobileNavItem icon={<LayoutDashboard size={21} />} label="Hoje"   active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
-        <MobileNavItem icon={<Calendar size={21} />}        label="Semana" active={currentView === 'week'}      onClick={() => setCurrentView('week')} />
-        <MobileNavItem icon={<TrendingUp size={21} />}      label="Stats"  active={currentView === 'progress'}  onClick={() => setCurrentView('progress')} />
-        <MobileNavItem icon={<Sparkles size={21} />}        label="IA"     active={currentView === 'ia'}         onClick={() => setCurrentView('ia')} />
-        <MobileNavItem icon={<SettingsIcon size={21} />}    label="Config" active={currentView === 'settings'}  onClick={() => setCurrentView('settings')} />
+        <MobileNavItem icon={<Dumbbell size={21} />}     label="Treino" active={currentView === 'treino'}   onClick={() => setCurrentView('treino')} />
+        <MobileNavItem icon={<Apple size={21} />}        label="Dieta"  active={currentView === 'dieta'}    onClick={() => setCurrentView('dieta')} />
+        <MobileNavItem icon={<Sparkles size={21} />}     label="IA"     active={currentView === 'ia'}       onClick={() => setCurrentView('ia')} />
+        <MobileNavItem icon={<SettingsIcon size={21} />} label="Config" active={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
       </nav>
 
       {/* Editor Modal */}
