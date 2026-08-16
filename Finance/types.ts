@@ -13,8 +13,21 @@ export interface Transaction {
   category: string;
   notes?: string;
   isRecurring?: boolean;
+  /** Regra que gerou esta transação (quando veio de uma recorrência) */
+  recurringRuleId?: string;
   installmentTotal?: number;
   installmentCurrent?: number;
+}
+
+/** Regra de recorrência: gera uma transação por mês automaticamente */
+export interface RecurringRule {
+  id: string;
+  title: string;
+  amount: number;
+  type: TransactionType;
+  category: string;
+  notes?: string;
+  active: boolean;
 }
 
 export interface SpendingGoal {

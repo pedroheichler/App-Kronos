@@ -24,6 +24,9 @@ copyDir('Finance/dist',  path.join(OUT, 'finance'));
 copyDir('Treino/dist',   path.join(OUT, 'treino'));
 copyDir('todolist/dist', path.join(OUT, 'todolist'));
 
+// Configuração do LiteSpeed/Apache da Hostinger: headers, cache e fallback SPA.
+fs.copyFileSync(path.join('hosting', '.htaccess'), path.join(OUT, '.htaccess'));
+
 console.log('✓ deploy/ pronto:');
 console.log('  /          → Hub');
 console.log('  /finance/  → Finance');

@@ -1,12 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard,
   TrendingUp,
   TrendingDown,
   PieChart as PieChartIcon,
   Plus,
-  ArrowUpRight,
-  ArrowDownLeft,
   Trash2,
   Edit2,
   CircleDollarSign,
@@ -36,10 +33,10 @@ import {
   Pie,
 } from "recharts";
 import { AppSwitcher } from './components/AppSwitcher';
-import { Transaction, Investment, TransactionType, DashboardSummary, SpendingGoal } from "../types";
+import { Transaction, Investment, TransactionType, DashboardSummary, SpendingGoal, RecurringRule } from "../types";
 import DashboardCard from "./components/DashboardCard";
 import { supabase } from "./services/supabase";
-import { getFinancialInsights } from "./services/insights";
+import type { Session } from '@supabase/supabase-js';
 
 const COLORS = ["#10b981","#6366f1", "#f59e0b", "#ef4444", "#a78bfa"];
 
@@ -57,6 +54,47 @@ const CRYPTOS = [
   { id: 'tron',         name: 'TRON',       symbol: 'TRX' },
   { id: 'toncoin',      name: 'Toncoin',    symbol: 'TON' },
 ];
+
+interface TransactionRow {
+  id: string;
+  title: string;
+  amount: number | string;
+  type: 'income' | 'expense';
+  category: string;
+  created_at: string;
+  notes: string | null;
+  is_recurring: boolean | null;
+  recurring_rule_id?: string | null;
+  installment_total: number | null;
+  installment_current: number | null;
+}
+
+interface SpendingGoalRow {
+  id: string;
+  category: string;
+  monthly_limit: number | string;
+}
+
+interface InvestmentRow {
+  id: string;
+  name: string;
+  initial_amount: number | string;
+  current_value: number | string;
+  type: Investment['type'];
+  date: string;
+  crypto_id: string | null;
+  quantity: number | string | null;
+}
+
+interface RecurringRuleRow {
+  id: string;
+  title: string;
+  amount: number | string;
+  type: 'income' | 'expense';
+  category: string;
+  notes: string | null;
+  active: boolean;
+}
 
 const App: React.FC = () => {
   // ---- Tema ----
@@ -76,14 +114,16 @@ const App: React.FC = () => {
   });
 
   // ---- Auth session (hooks SEMPRE rodam) ----
-  const [session, setSession] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const requireUserId = () => {
+    if (!session) throw new Error('Sessão necessária para esta operação.');
+    return session.user.id;
+  };
 
   // ---- State do app (hooks SEMPRE rodam) ----
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [investments, setInvestments] = useState<Investment[]>([]);
-  const [insights, setInsights] = useState<string>("");
-  const [loadingInsights, setLoadingInsights] = useState<boolean>(false);
   const [showTransModal, setShowTransModal] = useState(false);
   const [showInvModal, setShowInvModal] = useState(false);
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
@@ -95,6 +135,8 @@ const App: React.FC = () => {
   const [invModalCryptoId, setInvModalCryptoId] = useState('bitcoin');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [spendingGoals, setSpendingGoals] = useState<SpendingGoal[]>([]);
+  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
+  const [showRulesModal, setShowRulesModal] = useState(false);
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [editingGoal, setEditingGoal] = useState<SpendingGoal | null>(null);
   const [goalCategory, setGoalCategory] = useState('Alimentação');
@@ -128,16 +170,22 @@ const App: React.FC = () => {
 
   // ---- Carregar dados do Supabase quando estiver logado ----
   const fetchData = async () => {
+    // Gera as transações recorrentes do mês. Roda no servidor, numa transação
+    // só: não duplica se o app abrir em dois lugares ao mesmo tempo, e não
+    // recria o que você apagou de propósito.
+    const { error: genErr } = await supabase.rpc("generate_recurring_transactions");
+    if (genErr) console.error("Erro ao gerar recorrentes:", genErr.message);
+
     const { data: tData, error: tErr } = await supabase
       .from("transactions")
-      .select("id, title, amount, type, category, created_at, notes, is_recurring, installment_total, installment_current")
-      .eq("user_id", session.user.id)
+      .select("id, title, amount, type, category, created_at, notes, is_recurring, recurring_rule_id, installment_total, installment_current")
+      .eq("user_id", requireUserId())
       .order("created_at", { ascending: false });
 
     if (tErr) {
       console.error("Erro carregando transactions:", tErr.message);
     } else {
-      const mapTx = (t: any): Transaction => ({
+      const mapTx = (t: TransactionRow): Transaction => ({
         id: t.id,
         description: t.title,
         amount: Number(t.amount),
@@ -146,77 +194,36 @@ const App: React.FC = () => {
         date: t.created_at,
         notes: t.notes ?? undefined,
         isRecurring: t.is_recurring ?? false,
+        recurringRuleId: t.recurring_rule_id ?? undefined,
         installmentTotal: t.installment_total ?? undefined,
         installmentCurrent: t.installment_current ?? undefined,
       });
 
       const mapped = (tData || []).map(mapTx);
 
-      // Auto-inserir recorrentes que ainda não existem neste mês
-      const now = new Date();
-      const curYear = now.getFullYear();
-      const curMonth = now.getMonth();
-      const recurring = mapped.filter(t => t.isRecurring);
-      const thisMonthIds = new Set(
-        mapped
-          .filter(t => { const d = new Date(t.date); return d.getFullYear() === curYear && d.getMonth() === curMonth; })
-          .filter(t => t.isRecurring)
-          .map(t => t.description + '|' + t.category + '|' + t.type)
-      );
-
-      const toInsert = recurring
-        .filter(t => {
-          const d = new Date(t.date);
-          return !(d.getFullYear() === curYear && d.getMonth() === curMonth);
-        })
-        .reduce<Transaction[]>((acc, t) => {
-          const key = t.description + '|' + t.category + '|' + t.type;
-          if (!thisMonthIds.has(key) && !acc.find(x => x.description + '|' + x.category + '|' + x.type === key)) {
-            acc.push(t);
-          }
-          return acc;
-        }, []);
-
-      const inserted: Transaction[] = [];
-      for (const t of toInsert) {
-        const { data: ins } = await supabase
-          .from("transactions")
-          .insert({
-            user_id: session.user.id,
-            title: t.description,
-            amount: t.amount,
-            type: t.type === TransactionType.INCOME ? "income" : "expense",
-            category: t.category,
-            notes: t.notes,
-            is_recurring: true,
-            created_at: new Date(curYear, curMonth, 1).toISOString(),
-          })
-          .select("id, title, amount, type, category, created_at, notes, is_recurring")
-          .single();
-        if (ins) inserted.push(mapTx(ins));
-      }
-
-      setTransactions([...inserted, ...mapped]);
+      setTransactions(mapped);
     }
+
+    fetchRecurringRules();
 
     const { data: goalsData } = await supabase
       .from("spending_goals")
       .select("id, category, monthly_limit")
-      .eq("user_id", session.user.id);
+      .eq("user_id", requireUserId());
     if (goalsData) {
-      setSpendingGoals(goalsData.map((g: any) => ({ id: g.id, category: g.category, monthlyLimit: Number(g.monthly_limit) })));
+      setSpendingGoals(goalsData.map((g: SpendingGoalRow) => ({ id: g.id, category: g.category, monthlyLimit: Number(g.monthly_limit) })));
     }
 
     const { data: iData, error: iErr } = await supabase
       .from("investments")
       .select("id, name, initial_amount, current_value, type, date, crypto_id, quantity")
-      .eq("user_id", session.user.id)
+      .eq("user_id", requireUserId())
       .order("date", { ascending: false });
 
     if (iErr) {
       console.error("Erro carregando investments:", iErr.message);
     } else { // eslint-disable-line
-      const mapped: Investment[] = (iData || []).map((inv: any) => ({
+      const mapped: Investment[] = (iData || []).map((inv: InvestmentRow) => ({
         id: inv.id,
         name: inv.name,
         initialAmount: Number(inv.initial_amount),
@@ -240,7 +247,7 @@ const App: React.FC = () => {
       const data = await res.json();
       const prices: Record<string, number> = {};
       for (const [id, val] of Object.entries(data)) {
-        prices[id] = (val as any).brl;
+        prices[id] = (val as { brl?: number }).brl ?? 0;
       }
       setCryptoPrices(prices);
     } catch (e) {
@@ -324,12 +331,6 @@ const App: React.FC = () => {
     return computedInvestments.map((inv) => ({ name: inv.name, value: inv.currentValue }));
   }, [computedInvestments]);
 
-  const allTimeBalance = useMemo(() => {
-    const income   = transactions.filter(t => t.type === TransactionType.INCOME).reduce((a, c) => a + c.amount, 0);
-    const expenses = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((a, c) => a + c.amount, 0);
-    return income - expenses;
-  }, [transactions]);
-
   const groupedTransactions = useMemo(() => {
     const today = new Date();
     const yesterday = new Date(today);
@@ -364,11 +365,12 @@ const App: React.FC = () => {
 
     const installments = isInstallment ? Math.max(1, Number(formData.get("installments"))) : 1;
 
-    const mapRow = (data: any): Transaction => ({
+    const mapRow = (data: TransactionRow): Transaction => ({
       id: data.id, description: data.title, amount: Number(data.amount),
       type: data.type === "income" ? TransactionType.INCOME : TransactionType.EXPENSE,
       category: data.category, date: data.created_at,
       notes: data.notes ?? undefined, isRecurring: data.is_recurring ?? false,
+      recurringRuleId: data.recurring_rule_id ?? undefined,
       installmentTotal: data.installment_total ?? undefined,
       installmentCurrent: data.installment_current ?? undefined,
     });
@@ -378,6 +380,7 @@ const App: React.FC = () => {
         .from("transactions")
         .update({ title: desc, amount, type: defaultType, category, notes, is_recurring: isRecurring })
         .eq("id", editingTransaction.id)
+        .eq("user_id", requireUserId())
         .select("id, title, amount, type, category, created_at, notes, is_recurring, installment_total, installment_current")
         .single();
       if (error) { alert("Erro ao editar transação."); return; }
@@ -391,7 +394,7 @@ const App: React.FC = () => {
         const { data, error } = await supabase
           .from("transactions")
           .insert({
-            user_id: session.user.id, title: desc, amount, type: defaultType, category,
+            user_id: requireUserId(), title: desc, amount, type: defaultType, category,
             notes, is_recurring: false,
             installment_total: installments, installment_current: i + 1,
             created_at: date.toISOString(),
@@ -402,13 +405,41 @@ const App: React.FC = () => {
       }
       setTransactions(prev => [...inserted, ...prev]);
     } else {
+      // Marcou "recorrente": cria a regra que vai gerar as próximas
+      // automaticamente todo mês (o servidor cuida disso).
+      let ruleId: string | null = null;
+      if (isRecurring) {
+        const thisMonth = new Date();
+        const { data: rule, error: ruleErr } = await supabase
+          .from("recurring_rules")
+          .insert({
+            user_id: requireUserId(),
+            title: desc, amount, type: defaultType, category, notes,
+            last_generated_month: new Date(thisMonth.getFullYear(), thisMonth.getMonth(), 1)
+              .toISOString().slice(0, 10),
+          })
+          .select("id")
+          .single();
+        if (ruleErr) { alert("Não foi possível criar a recorrência."); return; }
+        ruleId = rule.id;
+      }
+
       const { data, error } = await supabase
         .from("transactions")
-        .insert({ user_id: session.user.id, title: desc, amount, type: defaultType, category, notes, is_recurring: isRecurring })
-        .select("id, title, amount, type, category, created_at, notes, is_recurring, installment_total, installment_current")
+        .insert({
+          user_id: requireUserId(), title: desc, amount, type: defaultType, category, notes,
+          is_recurring: isRecurring, recurring_rule_id: ruleId,
+        })
+        .select("id, title, amount, type, category, created_at, notes, is_recurring, recurring_rule_id, installment_total, installment_current")
         .single();
-      if (error) { alert("Erro ao salvar transação."); return; }
+      if (error) {
+        // Desfaz a regra para não sobrar recorrência sem transação
+        if (ruleId) await supabase.from("recurring_rules").delete().eq("id", ruleId);
+        alert("Erro ao salvar transação.");
+        return;
+      }
       setTransactions(prev => [mapRow(data), ...prev]);
+      if (isRecurring) fetchRecurringRules();
     }
 
     setShowTransModal(false);
@@ -424,7 +455,7 @@ const App: React.FC = () => {
   const saveGoal = async (category: string, limit: number) => {
     const { data, error } = await supabase
       .from("spending_goals")
-      .upsert({ user_id: session.user.id, category, monthly_limit: limit }, { onConflict: 'user_id,category' })
+      .upsert({ user_id: requireUserId(), category, monthly_limit: limit }, { onConflict: 'user_id,category' })
       .select("id, category, monthly_limit")
       .single();
     if (error) { alert("Erro ao salvar meta."); return; }
@@ -437,9 +468,46 @@ const App: React.FC = () => {
     setEditingGoal(null);
   };
 
+  const fetchRecurringRules = async () => {
+    const { data } = await supabase
+      .from("recurring_rules")
+      .select("id, title, amount, type, category, notes, active")
+      .eq("user_id", requireUserId())
+      .eq("active", true)
+      .order("created_at", { ascending: false });
+    if (data) {
+      setRecurringRules(data.map((r: RecurringRuleRow) => ({
+        id: r.id,
+        title: r.title,
+        amount: Number(r.amount),
+        type: r.type === "income" ? TransactionType.INCOME : TransactionType.EXPENSE,
+        category: r.category,
+        notes: r.notes ?? undefined,
+        active: r.active,
+      })));
+    }
+  };
+
+  // Cancelar a recorrência não apaga as transações já lançadas
+  const cancelRecurringRule = async (id: string) => {
+    const { error } = await supabase
+      .from("recurring_rules")
+      .update({ active: false })
+      .eq("id", id)
+      .eq("user_id", requireUserId());
+    if (error) { alert("Não foi possível cancelar a recorrência."); return; }
+    setRecurringRules(prev => prev.filter(r => r.id !== id));
+  };
+
   const deleteGoal = async (id: string) => {
-    await supabase.from("spending_goals").delete().eq("id", id).eq("user_id", session.user.id);
+    const removed = spendingGoals.find(g => g.id === id);
     setSpendingGoals(prev => prev.filter(g => g.id !== id));
+    const { error } = await supabase.from("spending_goals").delete().eq("id", id).eq("user_id", requireUserId());
+    if (error && removed) {
+      console.error('Erro ao remover limite:', error);
+      setSpendingGoals(prev => [...prev, removed]);
+      alert('Não foi possível remover o limite.');
+    }
   };
 
   const handleInvestmentSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -449,7 +517,7 @@ const App: React.FC = () => {
     const isCrypto = invModalType === 'Cripto';
     const cryptoMeta = CRYPTOS.find(c => c.id === invModalCryptoId);
     const payload = {
-      user_id: session.user.id,
+      user_id: requireUserId(),
       name: isCrypto
         ? `${cryptoMeta?.name ?? invModalCryptoId} - ${cryptoMeta?.symbol ?? ''}`
         : (formData.get("name") as string),
@@ -466,6 +534,7 @@ const App: React.FC = () => {
         .from("investments")
         .update(payload)
         .eq("id", editingInvestment.id)
+        .eq("user_id", requireUserId())
         .select("id, name, initial_amount, current_value, type, date, crypto_id, quantity")
         .single();
 
@@ -522,17 +591,6 @@ const App: React.FC = () => {
     (e.currentTarget as HTMLFormElement).reset();
   };
 
-  const fetchAIInsights = async () => {
-    if (transactions.length === 0 && investments.length === 0) {
-      setInsights("Adicione algumas transações ou ativos para que eu possa analisar sua jornada financeira.");
-      return;
-    }
-    setLoadingInsights(true);
-    const response = await getFinancialInsights(transactions, investments);
-    setInsights(response || "Não foi possível gerar insights agora.");
-    setLoadingInsights(false);
-  };
-
   const formatCurrency = (val: number) =>
     hideBalance ? "R$ ••••" : val.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -574,6 +632,13 @@ const App: React.FC = () => {
               className="hidden md:flex bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white px-4 py-2 rounded-lg text-sm font-semibold items-center gap-2 transition-all active:scale-95">
               <Plus size={16} /> Gasto
             </button>
+            {recurringRules.length > 0 && (
+              <button onClick={() => setShowRulesModal(true)} title="Recorrências ativas"
+                className="hidden md:flex p-1.5 rounded-lg text-[var(--tx-2)] hover:text-[var(--tx-1)] hover:bg-[var(--bg-inner)] transition-all items-center gap-1">
+                <RefreshCw size={16} />
+                <span className="text-[10px] font-semibold">{recurringRules.length}</span>
+              </button>
+            )}
             <button onClick={toggleHideBalance} title={hideBalance ? 'Mostrar saldo' : 'Esconder saldo'}
               className="p-1.5 rounded-lg text-[var(--tx-2)] hover:text-[var(--tx-1)] hover:bg-[var(--bg-inner)] transition-all">
               {hideBalance ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -642,9 +707,12 @@ const App: React.FC = () => {
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isLight ? '#E2E8F0' : '#1F1F1F'} />
                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: isLight ? '#64748B' : '#616161', fontSize: 9}} dy={6} />
                     <Tooltip contentStyle={{ backgroundColor: isLight ? '#fff' : '#111', borderRadius: '12px', border: 'none', color: isLight ? '#0F172A' : '#fff' }}
-                      itemStyle={{ color: isLight ? '#0F172A' : '#fff' }} formatter={(v: number) => [formatCurrency(v), 'Gastos']} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
-                    <Bar dataKey="value" radius={[6,6,6,6]} barSize={28} onClick={(d) => setSelectedCategory(p => p === d.name ? null : d.name)}>
-                      {chartData.map((e, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} opacity={selectedCategory && selectedCategory !== e.name ? 0.3 : 1} />)}
+                      itemStyle={{ color: isLight ? '#0F172A' : '#fff' }} formatter={(v: number | undefined) => [formatCurrency(v ?? 0), 'Gastos']} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+                    <Bar dataKey="value" radius={[6,6,6,6]} barSize={28} onClick={(d) => {
+                      const name = typeof d?.name === 'string' ? d.name : null;
+                      if (name) setSelectedCategory(previous => previous === name ? null : name);
+                    }}>
+                      {chartData.map((entry, index) => <Cell key={entry.name} fill={COLORS[index % COLORS.length]} opacity={selectedCategory && selectedCategory !== entry.name ? 0.3 : 1} />)}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -765,7 +833,11 @@ const App: React.FC = () => {
                             <Edit2 size={12} />
                           </button>
                           <button className="p-1 rounded text-[var(--tx-3)] hover:text-rose-400 transition-all"
-                            onClick={async () => { await supabase.from("transactions").delete().eq("id", t.id).eq("user_id", session.user.id); setTransactions(prev => prev.filter(x => x.id !== t.id)); }}>
+                            onClick={async () => {
+                            const { error } = await supabase.from("transactions").delete().eq("id", t.id).eq("user_id", session.user.id);
+                            if (error) { alert('Não foi possível remover a transação.'); return; }
+                            setTransactions(prev => prev.filter(x => x.id !== t.id));
+                          }}>
                             <Trash2 size={12} />
                           </button>
                         </div>
@@ -848,6 +920,15 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="bg-[var(--bg-card)] border border-[var(--bd)] rounded-2xl overflow-hidden">
+              {recurringRules.length > 0 && (
+                <button onClick={() => setShowRulesModal(true)} className="w-full flex items-center justify-between px-5 py-4 border-b border-[var(--bd)] hover:bg-[var(--bg-inner)] transition-all">
+                  <div className="flex items-center gap-3">
+                    <RefreshCw size={18} className="text-[var(--tx-2)]" />
+                    <span className="text-sm font-medium text-[var(--tx-1)]">Recorrências</span>
+                  </div>
+                  <span className="text-xs font-semibold text-[var(--tx-2)]">{recurringRules.length}</span>
+                </button>
+              )}
               <button onClick={toggleHideBalance} className="w-full flex items-center justify-between px-5 py-4 border-b border-[var(--bd)] hover:bg-[var(--bg-inner)] transition-all">
                 <div className="flex items-center gap-3">
                   {hideBalance ? <EyeOff size={18} className="text-[var(--tx-2)]" /> : <Eye size={18} className="text-[var(--tx-2)]" />}
@@ -954,11 +1035,14 @@ const App: React.FC = () => {
                         color: isLight ? "#0F172A" : "#ffffff",
                       }}
                       itemStyle={{ color: isLight ? "#0F172A" : "#fff", fontWeight: 700 }}
-                      formatter={(value: number) => [formatCurrency(value), 'Gastos']}
+                      formatter={(value: number | undefined) => [formatCurrency(value ?? 0), 'Gastos']}
                       cursor={{ fill: "rgba(255,255,255,0.03)" }}
                       />
                       <Bar dataKey="value" name="Total" radius={[8, 8, 8, 8]} barSize={40} cursor="pointer"
-                        onClick={(data) => setSelectedCategory(prev => prev === data.name ? null : data.name)}>
+                        onClick={(data) => {
+                          const name = typeof data?.name === 'string' ? data.name : null;
+                          if (name) setSelectedCategory(previous => previous === name ? null : name);
+                        }}>
                         {chartData.map((entry, index) => (
                           <Cell key={`cell-${index}`}
                             fill={COLORS[index % COLORS.length]}
@@ -1274,7 +1358,7 @@ const App: React.FC = () => {
                         contentStyle={{ borderRadius: '16px', border: isLight ? '1px solid #E2E8F0' : 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', background: isLight ? '#fff' : '#111', color: isLight ? '#0F172A' : '#fff' }}
                         itemStyle={{ color: isLight ? '#0F172A' : '#fff' }}
                         labelStyle={{ color: isLight ? '#0F172A' : '#fff' }}
-                        formatter={(value: number) => [formatCurrency(value), '']}
+                        formatter={(value: number | undefined) => [formatCurrency(value ?? 0), '']}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -1407,6 +1491,59 @@ const App: React.FC = () => {
               <BarChart3 size={20} />
               Ativo
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Recorrências ativas */}
+      {showRulesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={() => setShowRulesModal(false)}>
+          <div className="bg-[var(--bg-card)] rounded-2xl w-full max-w-md border border-[var(--bd-modal)] overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-[var(--bd-modal)] flex justify-between items-center">
+              <div>
+                <h3 className="text-base font-bold text-[var(--tx-modal)]">Recorrências ativas</h3>
+                <p className="text-xs text-[var(--tx-2)] mt-0.5">Lançadas automaticamente todo mês</p>
+              </div>
+              <button onClick={() => setShowRulesModal(false)}
+                className="p-1.5 rounded-lg text-[var(--tx-2)] hover:bg-[var(--bg-inner)] transition-all">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-2 max-h-[60vh] overflow-y-auto">
+              {recurringRules.length === 0 ? (
+                <p className="py-8 text-center text-sm text-[var(--tx-2)]">Nenhuma recorrência ativa.</p>
+              ) : recurringRules.map(rule => (
+                <div key={rule.id}
+                  className="flex items-center gap-3 px-4 py-3 bg-[var(--bg-inner)] rounded-xl group">
+                  <div className={`w-1.5 h-8 rounded-full shrink-0 ${
+                    rule.type === TransactionType.INCOME ? 'bg-emerald-400/60' : 'bg-rose-400/60'
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-[var(--tx-1)] truncate">{rule.title}</p>
+                    <p className="text-[11px] text-[var(--tx-2)]">{rule.category}</p>
+                  </div>
+                  <span className={`text-sm font-semibold tabular-nums ${
+                    rule.type === TransactionType.INCOME ? 'text-emerald-400' : 'text-rose-400'
+                  }`}>
+                    {rule.type === TransactionType.INCOME ? '+' : '-'}{formatCurrency(rule.amount)}
+                  </span>
+                  <button
+                    onClick={() => cancelRecurringRule(rule.id)}
+                    title="Parar de repetir"
+                    className="p-1.5 rounded-lg text-[var(--tx-3)] hover:text-rose-400 hover:bg-rose-400/10 transition-all"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <p className="px-5 pb-5 text-[11px] text-[var(--tx-3)]">
+              Cancelar mantém os lançamentos já feitos — só interrompe os próximos.
+            </p>
           </div>
         </div>
       )}

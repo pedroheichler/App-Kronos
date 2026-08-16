@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { supabase } from "./services/supabase";
 import type { Session } from "@supabase/supabase-js";
 
+const MIN_PASSWORD_LENGTH = 10;
+
 const input: React.CSSProperties = {
   width: "100%", padding: "12px 16px",
   background: "#111111", border: "1px solid #1F1F1F", borderRadius: 10,
@@ -16,7 +18,7 @@ function Auth() {
   const [erro, setErro]         = useState("");
   const [mode, setMode]         = useState<"login" | "signup" | "forgot">("login");
 
-  const isError   = erro.includes("Erro") || erro.includes("incorretos") || erro.includes("Preencha");
+  const isError   = erro.includes("Erro") || erro.includes("incorretos") || erro.includes("Preencha") || erro.startsWith("Use ");
   const isSuccess = !isError && !!erro;
 
   const handle = async () => {
@@ -34,8 +36,13 @@ function Auth() {
       return;
     }
 
-    const p = password.trim();
+    const p = password;
     if (!e || !p) { setErro("Preencha email e senha."); setLoading(false); return; }
+    if (mode === "signup" && p.length < MIN_PASSWORD_LENGTH) {
+      setErro(`Use pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`);
+      setLoading(false);
+      return;
+    }
 
     if (mode === "login") {
       const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
@@ -73,7 +80,7 @@ function Auth() {
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
           <input
             value={email} onChange={e => setEmail(e.target.value)}
-            placeholder="Email" type="email" style={input}
+              placeholder="Email" type="email" autoComplete="email" style={input}
             onFocus={e => (e.target.style.borderColor = "#2a2a2a")}
             onBlur={e => (e.target.style.borderColor = "#1F1F1F")}
           />
@@ -81,7 +88,7 @@ function Auth() {
             <input
               value={password} onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handle()}
-              type="password" placeholder="Senha" style={input}
+              type="password" placeholder="Senha" autoComplete={mode === "signup" ? "new-password" : "current-password"} style={input}
               onFocus={e => (e.target.style.borderColor = "#2a2a2a")}
               onBlur={e => (e.target.style.borderColor = "#1F1F1F")}
             />
@@ -274,11 +281,14 @@ function ResetPassword() {
   const [confirm, setConfirm]   = useState("");
   const [loading, setLoading]   = useState(false);
   const [msg, setMsg]           = useState("");
-  const isError = msg.startsWith("Erro") || msg.startsWith("As senhas");
+  const isError = msg.startsWith("Erro") || msg.startsWith("As senhas") || msg.startsWith("Use ");
 
   const handle = async () => {
     if (!password || password !== confirm) { setMsg("As senhas não coincidem."); return; }
-    if (password.length < 6) { setMsg("Mínimo 6 caracteres."); return; }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setMsg(`Use pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`);
+      return;
+    }
     setLoading(true);
     const { error } = await supabase.auth.updateUser({ password });
     if (error) setMsg("Erro ao redefinir senha.");
@@ -296,14 +306,14 @@ function ResetPassword() {
       <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 10 }}>
         <input
           value={password} onChange={e => setPassword(e.target.value)}
-          type="password" placeholder="Nova senha" style={input}
+          type="password" placeholder="Nova senha" autoComplete="new-password" style={input}
           onFocus={e => (e.target.style.borderColor = "#2a2a2a")}
           onBlur={e => (e.target.style.borderColor = "#1F1F1F")}
         />
         <input
           value={confirm} onChange={e => setConfirm(e.target.value)}
           onKeyDown={e => e.key === "Enter" && handle()}
-          type="password" placeholder="Confirmar senha" style={input}
+          type="password" placeholder="Confirmar senha" autoComplete="new-password" style={input}
           onFocus={e => (e.target.style.borderColor = "#2a2a2a")}
           onBlur={e => (e.target.style.borderColor = "#1F1F1F")}
         />

@@ -4,7 +4,7 @@
 
 ## Projeto
 name: Kronos
-description: Plataforma com três apps (Hub, Finance, Treino) para controle financeiro e de treinos — uso pessoal e em squad
+description: Plataforma com quatro apps (Hub, Finance, Treino com Dieta/Corpo e Todolist) para produtividade, finanças e saúde
 tone: minimalista, dark premium, clean — inspirado no Raycast
 
 ## Stack

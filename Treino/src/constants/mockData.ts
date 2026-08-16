@@ -1,4 +1,4 @@
-import { Squad, DayPlan } from '../types';
+import type { Squad } from '../types';
 
 const DAYS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
 

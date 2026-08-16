@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /hub
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /Finance
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /Treino
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /todolist
+    schedule: { interval: weekly }

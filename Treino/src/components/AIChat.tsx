@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Send, Loader2, Sparkles, RotateCcw, CheckCircle2, Calendar } from 'lucide-react';
 import type { Squad } from '../types';
 import {
@@ -54,21 +54,42 @@ const QUICK_ACTIONS = [
   },
 ];
 
-function renderMarkdown(text: string) {
-  return text
-    // Escapa HTML primeiro — impede injeção de tags vindas da resposta da IA
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/^### (.*$)/gm, '<h3 class="text-sm font-bold text-[#E8E8E8] mt-3 mb-1">$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2 class="text-sm font-bold text-[#E8E8E8] mt-3 mb-1">$1</h2>')
-    .replace(/^- (.*$)/gm, '<li class="ml-4 list-disc text-[#C8C8C8]">$1</li>')
-    .replace(/(<li.*<\/li>\n?)+/g, '<ul class="my-1 space-y-0.5">$&</ul>')
-    .replace(/\n\n/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>');
+function renderInlineMarkdown(text: string): ReactNode[] {
+  return text.split(/(\*\*.*?\*\*|\*.*?\*)/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={index}>{part.slice(1, -1)}</em>;
+    }
+
+    return part;
+  });
+}
+
+function MarkdownMessage({ text }: { text: string }) {
+  return (
+    <div className="prose-sm">
+      {text.split('\n').map((line, index) => {
+        if (line.startsWith('### ')) {
+          return <h3 key={index} className="text-sm font-bold text-[var(--text)] mt-3 mb-1">{renderInlineMarkdown(line.slice(4))}</h3>;
+        }
+
+        if (line.startsWith('## ')) {
+          return <h2 key={index} className="text-sm font-bold text-[var(--text)] mt-3 mb-1">{renderInlineMarkdown(line.slice(3))}</h2>;
+        }
+
+        if (line.startsWith('- ')) {
+          return <div key={index} className="ml-4 flex gap-2 text-[var(--text)]"><span aria-hidden="true">•</span><span>{renderInlineMarkdown(line.slice(2))}</span></div>;
+        }
+
+        return line
+          ? <span key={index} className="block">{renderInlineMarkdown(line)}</span>
+          : <br key={index} />;
+      })}
+    </div>
+  );
 }
 
 export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChatProps) {
@@ -143,7 +164,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
       );
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : 'Erro desconhecido';
-      const status = (err as any)?.status as number | undefined;
+      const status = (err as { status?: number })?.status;
       let msg = raw;
       let isRetryable = false;
 
@@ -185,11 +206,11 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
       {/* Empty state */}
       {isEmpty && (
         <div className="mb-2">
-          <p className="text-[10px] text-[#616161] uppercase tracking-widest font-medium mb-1.5">
+          <p className="text-[10px] text-[var(--text-2)] uppercase tracking-widest font-medium mb-1.5">
             Kronos AI
           </p>
           <h1
-            className="text-4xl font-black uppercase tracking-wider text-[#E8E8E8] leading-tight mb-6"
+            className="text-4xl font-black uppercase tracking-wider text-[var(--text)] leading-tight mb-6"
             style={{ fontFamily: "'Barlow Condensed', sans-serif" }}
           >
             COMO POSSO<br />TE AJUDAR?
@@ -200,10 +221,10 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
                 key={action.label}
                 onClick={() => send(action.prompt)}
                 disabled={loading}
-                className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-4 text-left hover:border-emerald-500/30 hover:bg-[#131313] transition-all group disabled:opacity-50"
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 text-left hover:border-[var(--accent-line)] hover:bg-[var(--surface-2)] transition-all group disabled:opacity-50"
               >
-                <Sparkles size={13} className="text-emerald-400 mb-2.5" />
-                <p className="text-xs font-semibold text-[#C8C8C8] group-hover:text-[#E8E8E8] transition-colors leading-tight">
+                <Sparkles size={13} className="text-[var(--accent)] mb-2.5" />
+                <p className="text-xs font-semibold text-[var(--text)] group-hover:text-[var(--text)] transition-colors leading-tight">
                   {action.label}
                 </p>
               </button>
@@ -222,30 +243,30 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
             >
               {/* Workout created card */}
               {msg.workoutCard ? (
-                <div className="max-w-[88%] bg-[#111111] border border-emerald-500/30 rounded-2xl p-4">
+                <div className="max-w-[88%] bg-[var(--surface)] border border-[var(--accent-line)] rounded-2xl p-4">
                   <div className="flex items-center gap-2 mb-3">
-                    <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
-                    <span className="text-sm font-semibold text-emerald-400">
+                    <CheckCircle2 size={15} className="text-[var(--accent)] shrink-0" />
+                    <span className="text-sm font-semibold text-[var(--accent)]">
                       Treino adicionado na {msg.workoutCard.dayName}!
                     </span>
                   </div>
                   <div className="flex items-center gap-2 mb-3">
-                    <Calendar size={12} className="text-[#616161]" />
-                    <span className="text-xs text-[#616161]">
+                    <Calendar size={12} className="text-[var(--text-2)]" />
+                    <span className="text-xs text-[var(--text-2)]">
                       {msg.workoutCard.focus} · {msg.workoutCard.exercises.length} exercícios
                     </span>
                   </div>
                   <div className="space-y-1.5">
                     {msg.workoutCard.exercises.map((ex, i) => (
                       <div key={i} className="flex items-baseline justify-between gap-4">
-                        <span className="text-xs text-[#C8C8C8] flex-1">{ex.name}</span>
-                        <span className="text-xs text-[#616161] shrink-0 tabular-nums">
+                        <span className="text-xs text-[var(--text)] flex-1">{ex.name}</span>
+                        <span className="text-xs text-[var(--text-2)] shrink-0 tabular-nums">
                           {ex.sets}×{ex.reps}
                         </span>
                       </div>
                     ))}
                   </div>
-                  <p className="text-[10px] text-[#3a3a3a] mt-3">
+                  <p className="text-[10px] text-[var(--text-3)] mt-3">
                     Veja em Semana → {msg.workoutCard.dayName}
                   </p>
                 </div>
@@ -253,22 +274,19 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
                 <div
                   className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     msg.role === 'user'
-                      ? 'bg-emerald-500/15 border border-emerald-500/25 text-[#E8E8E8]'
-                      : 'bg-[#111111] border border-[#1F1F1F] text-[#C8C8C8]'
+                      ? 'bg-[var(--accent-soft)] border border-[var(--accent-line)] text-[var(--text)]'
+                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text)]'
                   }`}
                 >
                   {msg.text ? (
                     <>
                       {msg.role === 'assistant' ? (
-                        <div
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }}
-                          className="prose-sm"
-                        />
+                        <MarkdownMessage text={msg.text} />
                       ) : (
                         <span>{msg.text}</span>
                       )}
                       {msg.streaming && (
-                        <span className="inline-block w-0.5 h-3.5 bg-emerald-400 ml-0.5 animate-pulse align-middle" />
+                        <span className="inline-block w-0.5 h-3.5 bg-[var(--accent)] ml-0.5 animate-pulse align-middle" />
                       )}
                       {msg.retryable && lastFailedMsg && (
                         <button
@@ -276,7 +294,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
                             setMessages(prev => prev.filter(m => m.id !== msg.id));
                             send(lastFailedMsg);
                           }}
-                          className="flex items-center gap-1.5 mt-2 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                          className="flex items-center gap-1.5 mt-2 text-xs text-[var(--accent)] hover:text-[var(--accent)] transition-colors"
                         >
                           <RotateCcw size={11} />
                           Tentar novamente
@@ -285,9 +303,9 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
                     </>
                   ) : (
                     <div className="flex gap-1.5 py-0.5 items-center">
-                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      <span className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
                 </div>
@@ -306,7 +324,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
               key={action.label}
               onClick={() => send(action.prompt)}
               disabled={loading}
-              className="text-xs text-[#616161] border border-[#1F1F1F] rounded-full px-3 py-1.5 hover:border-emerald-500/30 hover:text-emerald-400 transition-colors disabled:opacity-40 whitespace-nowrap"
+              className="text-xs text-[var(--text-2)] border border-[var(--border)] rounded-full px-3 py-1.5 hover:border-[var(--accent-line)] hover:text-[var(--accent)] transition-colors disabled:opacity-40 whitespace-nowrap"
             >
               {action.label}
             </button>
@@ -314,7 +332,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
           <button
             onClick={() => setMessages([])}
             disabled={loading}
-            className="text-xs text-[#3a3a3a] border border-[#1F1F1F] rounded-full px-3 py-1.5 hover:border-red-500/30 hover:text-red-400 transition-colors disabled:opacity-40 flex items-center gap-1"
+            className="text-xs text-[var(--text-3)] border border-[var(--border)] rounded-full px-3 py-1.5 hover:border-red-500/30 hover:text-red-400 transition-colors disabled:opacity-40 flex items-center gap-1"
           >
             <RotateCcw size={10} />
             Limpar
@@ -323,7 +341,7 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
       )}
 
       {/* Input */}
-      <div className={`${isEmpty ? 'mt-2' : ''} border-t border-[#1F1F1F] pt-4`}>
+      <div className={`${isEmpty ? 'mt-2' : ''} border-t border-[var(--border)] pt-4`}>
         <div className="flex gap-2 items-end">
           <textarea
             ref={textareaRef}
@@ -342,21 +360,21 @@ export function AIChat({ squad, streak, progressStats, onCreateWorkout }: AIChat
             }}
             placeholder="Pergunte sobre treino, dieta, progresso..."
             rows={1}
-            className="flex-1 bg-[#111111] border border-[#1F1F1F] focus:border-emerald-500/40 rounded-xl px-4 py-3 text-sm text-[#E8E8E8] placeholder-[#3a3a3a] outline-none transition-colors resize-none"
+            className="flex-1 bg-[var(--surface)] border border-[var(--border)] focus:border-[var(--accent-line)] rounded-xl px-4 py-3 text-sm text-[var(--text)] placeholder-[var(--text-3)] outline-none transition-colors resize-none"
             style={{ minHeight: 44, maxHeight: 120 }}
           />
           <button
             onClick={() => send(input)}
             disabled={!input.trim() || loading}
-            className="w-11 h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center shrink-0"
+            className="w-11 h-11 rounded-xl bg-[var(--accent)] hover:bg-[var(--accent)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center justify-center shrink-0"
           >
             {loading
-              ? <Loader2 size={16} className="animate-spin text-white" />
-              : <Send size={16} className="text-white" />
+              ? <Loader2 size={16} className="animate-spin text-[var(--btn-fg)]" />
+              : <Send size={16} className="text-[var(--btn-fg)]" />
             }
           </button>
         </div>
-        <p className="text-[10px] text-[#3a3a3a] mt-2 text-center">
+        <p className="text-[10px] text-[var(--text-3)] mt-2 text-center">
           Enter para enviar · Shift+Enter para nova linha
         </p>
       </div>

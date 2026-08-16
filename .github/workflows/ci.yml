@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            hub/package-lock.json
+            Finance/package-lock.json
+            Treino/package-lock.json
+            todolist/package-lock.json
+
+      - name: Instalar dependências
+        run: |
+          npm ci
+          npm ci --prefix hub
+          npm ci --prefix Finance
+          npm ci --prefix Treino
+          npm ci --prefix todolist
+
+      - name: TypeScript, lint, testes e builds
+        run: npm run check
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Validar Edge Functions
+        run: deno check supabase/functions/anthropic-proxy/index.ts
+
+      - name: Auditoria de dependências
+        run: npm run security:audit
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Reconstruir banco pelas migrações
+        run: supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+
+      - name: Lint do schema
+        run: supabase db lint --local --level warning
+
+      - name: Encerrar Supabase local
+        if: always()
+        run: supabase stop --no-backup

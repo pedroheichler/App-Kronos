@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, ReactNode } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { supabase } from './services/supabase';
 import {
   addExercise as addExerciseToDB,
@@ -6,7 +6,6 @@ import {
   deleteExercise as deleteExerciseFromDB,
 } from './services/exercises';
 import {
-  LayoutDashboard,
   Calendar,
   TrendingUp,
   Settings as SettingsIcon,
@@ -18,14 +17,30 @@ import {
   Dumbbell,
   Sparkles,
   Apple,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
-import { Squad, ViewType, TreinoTab, Exercise } from './types';
-import { Settings } from './components/Settings';
-import { AIChat } from './components/AIChat';
-import { Dieta } from './components/Dieta';
+import { Squad, ViewType, TreinoTab, DietaTab, Exercise } from './types';
+import { muscleGroupOf, MUSCLE_COLORS, type MuscleGroup } from './services/muscleGroups';
+import { collectWeekFacts, generateWeeklyReport } from './services/weeklyReport';
 import type { WorkoutExercise } from './services/gemini';
+import type { Session } from '@supabase/supabase-js';
+
+const Settings = lazy(() => import('./components/Settings').then(module => ({ default: module.Settings })));
+const AIChat = lazy(() => import('./components/AIChat').then(module => ({ default: module.AIChat })));
+const Dieta = lazy(() => import('./components/Dieta').then(module => ({ default: module.Dieta })));
+
+function ViewLoading() {
+  return (
+    <div className="min-h-48 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 animate-pulse">
+      <div className="h-4 w-32 rounded bg-[var(--surface-3)] mb-4" />
+      <div className="h-3 w-full rounded bg-[var(--surface-3)] mb-2" />
+      <div className="h-3 w-2/3 rounded bg-[var(--surface-3)]" />
+    </div>
+  );
+}
 
 
 // Retorna "YYYY-MM-DD" no fuso local (evita bug UTC-3 após 21h)
@@ -71,12 +86,12 @@ function calcStreak(dates: string[], trainingDays: number[] = []): number {
 }
 
 function getStreakStyle(days: number): { color: string; badge: string } {
-  if (days >= 60) return { color: '#ffd700', badge: '60 dias 🏆' };
-  if (days >= 45) return { color: '#8b5cf6', badge: '45 dias ⚡' };
-  if (days >= 30) return { color: '#ef4444', badge: '30 dias 💪' };
-  if (days >= 15) return { color: '#f97316', badge: '15 dias 🔥' };
-  if (days >= 7)  return { color: '#fbbf24', badge: '7 dias 🏅' };
-  return { color: '#E8E8E8', badge: '' };
+  if (days >= 60) return { color: 'var(--load)', badge: '60 dias 🏆' };
+  if (days >= 45) return { color: 'var(--accent)', badge: '45 dias ⚡' };
+  if (days >= 30) return { color: 'var(--danger)', badge: '30 dias 💪' };
+  if (days >= 15) return { color: 'var(--load)', badge: '15 dias 🔥' };
+  if (days >= 7)  return { color: 'var(--load)', badge: '7 dias 🏅' };
+  return { color: 'var(--text)', badge: '' };
 }
 
 function parseRestSeconds(rest: string): number {
@@ -108,48 +123,31 @@ async function findWorkspace(userId: string): Promise<{ id: string; personal: bo
 
 // Cria um espaço de treino individual (sem equipe) com os 7 dias da semana.
 // Devolve o id, ou null se algo falhar.
-async function createPersonalWorkspace(userId: string): Promise<string | null> {
-  const { data: squad, error: squadErr } = await supabase
-    .from('squads')
-    .insert({ name: 'Meu Treino', created_by: userId, is_personal: true })
-    .select('id')
-    .single();
-
-  if (squadErr || !squad) {
-    console.error('Erro ao criar espaço pessoal:', squadErr);
+async function createPersonalWorkspace(): Promise<string | null> {
+  const { data, error } = await supabase.rpc('create_squad', {
+    p_name: 'Meu Treino',
+    p_personal: true,
+  });
+  if (error) {
+    console.error('Erro ao criar espaço pessoal:', error);
     return null;
   }
-
-  const { error: memberErr } = await supabase
-    .from('squad_members')
-    .insert({ squad_id: squad.id, user_id: userId, role: 'admin' });
-
-  if (memberErr) {
-    console.error('Erro ao entrar no espaço pessoal:', memberErr);
-    return null;
-  }
-
-  const dias = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
-  await supabase
-    .from('workout_days')
-    .insert(dias.map((name, i) => ({ squad_id: squad.id, name, day_order: i })));
-
-  return squad.id;
+  return data as string;
 }
 
 function DevLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#09090b' }}>
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg)' }}>
       <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <h2 style={{ color: '#fff', marginBottom: 8 }}>Login (dev)</h2>
         <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email"
-          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          style={{ padding: 10, background: 'var(--surface-3)', border: '1px solid var(--border-strong)', borderRadius: 8, color: '#fff' }} />
         <input value={password} onChange={e => setPassword(e.target.value)} placeholder="senha" type="password"
-          style={{ padding: 10, background: '#1a1a1a', border: '1px solid #333', borderRadius: 8, color: '#fff' }} />
+          style={{ padding: 10, background: 'var(--surface-3)', border: '1px solid var(--border-strong)', borderRadius: 8, color: '#fff' }} />
         <button onClick={() => supabase.auth.signInWithPassword({ email, password })}
-          style={{ padding: 12, background: '#10b981', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+          style={{ padding: 12, background: 'var(--accent)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
           Entrar
         </button>
       </div>
@@ -160,7 +158,7 @@ function DevLogin() {
 export default function App() {
 
   // ── Todos os hooks primeiro ──
-  const [session, setSession] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [squad, setSquad] = useState<Squad>({
     id: '',
@@ -172,6 +170,31 @@ export default function App() {
   });
   const [currentView, setCurrentView] = useState<ViewType>('treino');
   const [treinoTab, setTreinoTab] = useState<TreinoTab>('hoje');
+  const [dietaTab, setDietaTab] = useState<DietaTab>('agua');
+
+  // Tema: "noite" (azul de madrugada) ou "cal" (quase branco com limão)
+  const [theme, setTheme] = useState<'noite' | 'cal'>(
+    () => (localStorage.getItem('kronos-theme') as 'noite' | 'cal') ?? 'noite'
+  );
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => {
+      const next = prev === 'noite' ? 'cal' : 'noite';
+      localStorage.setItem('kronos-theme', next);
+      return next;
+    });
+  }, []);
+
+  // A classe no <html> faz o fundo da página acompanhar o tema
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-cal', theme === 'cal');
+    document.documentElement.classList.toggle('theme-noite', theme === 'noite');
+  }, [theme]);
+  // Aviso global (erro ou sucesso) — substitui os alert() do navegador
+  const [toast, setToast] = useState<{ text: string; kind: 'erro' | 'ok' } | null>(null);
+  const notify = useCallback((text: string, kind: 'erro' | 'ok' = 'erro') => {
+    setToast({ text, kind });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingExercise, setEditingExercise] = useState<{dayId: string, exercise: Exercise} | null>(null);
   const [squadId, setSquadId] = useState<string | null>(null);
@@ -201,10 +224,56 @@ export default function App() {
   // ── Features: set tracking, rest timer, per-set loads, PR ───────────────────
   const [setProgress, setSetProgress] = useState<Record<string, boolean[]>>({});
   const [restTimer, setRestTimer] = useState<{ exerciseId: string; remaining: number; total: number } | null>(null);
-  const [setLoadData, setSetLoadData] = useState<Record<string, Array<{ weight: string; reps: string }>>>(() => {
-    try { return JSON.parse(localStorage.getItem('kronos_set_loads') ?? '{}'); } catch { return {}; }
-  });
+  // Cargas por série do dia. Ficam no banco (tabela set_logs) para não sumirem
+  // ao trocar de aparelho ou limpar o cache.
+  const [setLoadData, setSetLoadData] = useState<Record<string, Array<{ weight: string; reps: string }>>>({});
   const [prIds, setPrIds] = useState<Set<string>>(new Set());
+  // Maior peso já registrado por exercício, vindo do banco
+  const [personalRecords, setPersonalRecords] = useState<Record<string, number>>({});
+  // Resumo da última sessão de cada exercício (ex: "4×10 · 75 kg")
+  const [previousLoads, setPreviousLoads] = useState<Record<string, string>>({});
+  // Evolução de carga: maior peso por data, agrupado por exercício
+  const [evolution, setEvolution] = useState<Record<string, { name: string; points: { date: string; kg: number }[] }>>({});
+  const [evolutionPick, setEvolutionPick] = useState<string | null>(null);
+  // Dias com treino registrado, para o calendário do mês
+  const [trainedDates, setTrainedDates] = useState<Set<string>>(new Set());
+  // Resumo semanal gerado por IA
+  const [weekReport, setWeekReport] = useState<string | null>(null);
+  const [weekReportLoading, setWeekReportLoading] = useState(false);
+  const loadSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // ── Rotas por hash (#/dieta/corpo) ──
+  // Hash em vez de caminho: funciona em hospedagem estática sem precisar
+  // configurar reescrita no servidor. Resolve o F5 perdendo a aba e o botão
+  // voltar do celular saindo do app.
+  useEffect(() => {
+    const applyHash = () => {
+      const [view, sub] = window.location.hash.replace(/^#\/?/, '').split('/');
+      const views: ViewType[] = ['treino', 'dieta', 'ia', 'settings'];
+      if (!views.includes(view as ViewType)) return;
+
+      setCurrentView(view as ViewType);
+      if (view === 'treino' && ['hoje', 'semana', 'progresso'].includes(sub)) {
+        setTreinoTab(sub as TreinoTab);
+      }
+      if (view === 'dieta' && ['agua', 'refeicoes', 'corpo'].includes(sub)) {
+        setDietaTab(sub as DietaTab);
+      }
+    };
+
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
+
+  // Reflete a navegação na URL, mantendo o histórico do navegador utilizável
+  useEffect(() => {
+    const sub = currentView === 'treino' ? treinoTab : currentView === 'dieta' ? dietaTab : '';
+    const next = `#/${currentView}${sub ? '/' + sub : ''}`;
+    if (window.location.hash !== next) {
+      window.history.pushState(null, '', next);
+    }
+  }, [currentView, treinoTab, dietaTab]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -233,7 +302,7 @@ export default function App() {
       setIsPersonal(ws.personal);
     } else {
       // Sem nenhum espaço: cria um pessoal para treinar sozinho
-      setSquadId(await createPersonalWorkspace(session.user.id));
+      setSquadId(await createPersonalWorkspace());
       setIsPersonal(true);
     }
     setCheckingSquad(false);
@@ -243,7 +312,8 @@ export default function App() {
 }, [session?.user?.id]);
 
 useEffect(() => {
-  if (!squadId) return;
+  if (!squadId || !session) return;
+  const currentSession = session;
 
   const load = async () => {
     setSquadLoading(true);
@@ -265,7 +335,7 @@ useEffect(() => {
 
     const dayIds = daysData.map((d: any) => d.id);
     const memberUserIds = (membersData || []).map((m: any) => m.user_id);
-    const allUserIds = [...new Set([...memberUserIds, session.user.id])];
+    const allUserIds = [...new Set([...memberUserIds, currentSession.user.id])];
 
     // ── Batch 2: 4 requisições em paralelo ──────────────────────────────────
     // Exercícios: 1 query com .in() em vez de N queries separadas
@@ -277,9 +347,9 @@ useEffect(() => {
       { data: membersProgressData },
     ] = await Promise.all([
       supabase.from('exercises').select('id, name, sets, reps, rest, notes, workout_day_id').in('workout_day_id', dayIds).order('created_at', { ascending: true }),
-      supabase.from('exercise_progress').select('exercise_id, completed').eq('user_id', session.user.id).eq('date', today),
+      supabase.from('exercise_progress').select('exercise_id, completed').eq('user_id', currentSession.user.id).eq('date', today),
       supabase.from('profiles').select('id, name, avatar_url').in('id', allUserIds),
-      supabase.from('exercise_progress').select('date').eq('user_id', session.user.id).eq('completed', true).gte('date', oneYearAgo),
+      supabase.from('exercise_progress').select('date').eq('user_id', currentSession.user.id).eq('completed', true).gte('date', oneYearAgo),
       memberUserIds.length > 0
         ? supabase.from('exercise_progress').select('user_id, date').in('user_id', memberUserIds).eq('completed', true).gte('date', oneYearAgo)
         : Promise.resolve({ data: [] }),
@@ -313,10 +383,10 @@ useEffect(() => {
       templates: [],
       members: (membersData || []).map((m: any) => ({
         id: m.user_id,
-        name: profileMap.get(m.user_id)?.name || (m.user_id === session.user.id ? session.user.email : 'Membro'),
+        name: profileMap.get(m.user_id)?.name || (m.user_id === currentSession.user.id ? currentSession.user.email : 'Membro'),
         avatar: profileMap.get(m.user_id)?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.user_id}`,
         role: m.role,
-        isOnline: m.user_id === session.user.id,
+        isOnline: m.user_id === currentSession.user.id,
       })),
       weeklyPlan: daysData.map((day: any) => ({
         id: day.id,
@@ -415,6 +485,55 @@ useEffect(() => {
     if (currentView === 'treino' && treinoTab === 'progresso') fetchProgressStats();
   }, [currentView, treinoTab, fetchProgressStats]);
 
+  // Evolução de carga por exercício (alimenta o gráfico da aba Progresso)
+  useEffect(() => {
+    if (currentView !== 'treino' || treinoTab !== 'progresso' || !session?.user?.id) return;
+
+    const sixMonthsAgo = localDateStr(new Date(Date.now() - 182 * 24 * 60 * 60 * 1000));
+
+    // Dias com pelo menos um exercício concluído (calendário)
+    supabase
+      .from('exercise_progress')
+      .select('date')
+      .eq('user_id', session.user.id)
+      .eq('completed', true)
+      .gte('date', localDateStr(new Date(Date.now() - 370 * 24 * 60 * 60 * 1000)))
+      .then(({ data }) => {
+        if (data) setTrainedDates(new Set(data.map((r: any) => r.date)));
+      });
+
+    supabase
+      .from('set_logs')
+      .select('exercise_id, date, weight, exercises(name)')
+      .eq('user_id', session.user.id)
+      .gte('date', sixMonthsAgo)
+      .not('weight', 'is', null)
+      .order('date', { ascending: true })
+      .then(({ data }) => {
+        if (!data) return;
+        const acc: Record<string, { name: string; byDate: Record<string, number> }> = {};
+
+        for (const row of data as any[]) {
+          const rel = row.exercises;
+          const name = (Array.isArray(rel) ? rel[0]?.name : rel?.name) ?? 'Exercício';
+          const entry = (acc[row.exercise_id] ??= { name, byDate: {} });
+          const kg = Number(row.weight);
+          // Guarda só a maior carga de cada dia
+          entry.byDate[row.date] = Math.max(entry.byDate[row.date] ?? 0, kg);
+        }
+
+        const built: Record<string, { name: string; points: { date: string; kg: number }[] }> = {};
+        for (const [id, e] of Object.entries(acc)) {
+          const points = Object.entries(e.byDate)
+            .map(([date, kg]) => ({ date, kg }))
+            .sort((a, b) => a.date.localeCompare(b.date));
+          if (points.length >= 2) built[id] = { name: e.name, points };
+        }
+        setEvolution(built);
+        setEvolutionPick(prev => (prev && built[prev] ? prev : Object.keys(built)[0] ?? null));
+      });
+  }, [currentView, treinoTab, session?.user?.id]);
+
   useEffect(() => {
     if (currentView !== 'treino' || treinoTab !== 'progresso' || !session?.user?.id) return;
     setLoadsLoading(true);
@@ -489,10 +608,84 @@ useEffect(() => {
     return () => clearTimeout(id);
   }, [restTimer]);
 
-  // Persist load data to localStorage
+  // Carrega as cargas de hoje e os recordes assim que o plano da semana chega
   useEffect(() => {
-    localStorage.setItem('kronos_set_loads', JSON.stringify(setLoadData));
-  }, [setLoadData]);
+    if (!session?.user?.id || squad.weeklyPlan.length === 0) return;
+
+    const exerciseIds = squad.weeklyPlan.flatMap(d => d.exercises.map(e => e.id));
+    if (exerciseIds.length === 0) return;
+
+    const load = async () => {
+      const [{ data: logs }, { data: prs }] = await Promise.all([
+        supabase
+          .from('set_logs')
+          .select('exercise_id, set_index, weight, reps')
+          .eq('user_id', session.user.id)
+          .eq('date', localDateStr())
+          .in('exercise_id', exerciseIds),
+        supabase.rpc('exercise_personal_records'),
+      ]);
+
+      if (logs) {
+        const byExercise: Record<string, Array<{ weight: string; reps: string }>> = {};
+        for (const row of logs) {
+          const arr = byExercise[row.exercise_id] ?? [];
+          while (arr.length <= row.set_index) arr.push({ weight: '', reps: '' });
+          arr[row.set_index] = {
+            weight: row.weight != null ? String(row.weight) : '',
+            reps: row.reps != null ? String(row.reps) : '',
+          };
+          byExercise[row.exercise_id] = arr;
+        }
+        setSetLoadData(byExercise);
+      }
+
+      if (prs) {
+        const map: Record<string, number> = {};
+        for (const row of prs as { exercise_id: string; best_weight: number }[]) {
+          map[row.exercise_id] = Number(row.best_weight);
+        }
+        setPersonalRecords(map);
+      }
+
+      // "Da última vez você fez...": pega a sessão anterior mais recente
+      const { data: past } = await supabase
+        .from('set_logs')
+        .select('exercise_id, date, weight, reps')
+        .eq('user_id', session.user.id)
+        .lt('date', localDateStr())
+        .in('exercise_id', exerciseIds)
+        .order('date', { ascending: false });
+
+      if (past) {
+        const summary: Record<string, string> = {};
+        const lastDate: Record<string, string> = {};
+        const rows: Record<string, { weight: number | null; reps: number | null }[]> = {};
+
+        for (const r of past) {
+          // Só a data mais recente de cada exercício
+          if (!lastDate[r.exercise_id]) lastDate[r.exercise_id] = r.date;
+          if (r.date !== lastDate[r.exercise_id]) continue;
+          (rows[r.exercise_id] ??= []).push({ weight: r.weight, reps: r.reps });
+        }
+
+        for (const [exId, sets] of Object.entries(rows)) {
+          const weights = sets.map(s => s.weight).filter((w): w is number => w != null);
+          const repsList = sets.map(s => s.reps).filter((r): r is number => r != null);
+          if (weights.length === 0 && repsList.length === 0) continue;
+          const topWeight = weights.length ? Math.max(...weights) : null;
+          const reps = repsList.length ? Math.max(...repsList) : null;
+          summary[exId] = [
+            reps != null ? `${sets.length}×${reps}` : `${sets.length} séries`,
+            topWeight != null ? `${topWeight} kg` : null,
+          ].filter(Boolean).join(' · ');
+        }
+        setPreviousLoads(summary);
+      }
+    };
+
+    load();
+  }, [session?.user?.id, squad.weeklyPlan.length]); // eslint-disable-line
 
   // Request notification permission once
   useEffect(() => {
@@ -502,7 +695,7 @@ useEffect(() => {
   }, []);
 
   // ── Returns condicionais (só depois de todos os hooks) ──
-  if (authLoading || checkingSquad) return <div style={{ color: '#fff', padding: 40, background: '#09090b', minHeight: '100vh' }}>Carregando...</div>;
+  if (authLoading || checkingSquad) return <div style={{ color: '#fff', padding: 40, background: 'var(--bg)', minHeight: '100vh' }}>Carregando...</div>;
 
   if (!session) {
     if (import.meta.env.PROD) {
@@ -512,6 +705,19 @@ useEffect(() => {
     return <DevLogin />;
   }
 
+  const buildWeeklyReport = async () => {
+    setWeekReportLoading(true);
+    try {
+      const facts = await collectWeekFacts(session.user.id);
+      setWeekReport(await generateWeeklyReport(facts));
+    } catch (err: any) {
+      console.error('Erro ao gerar o resumo semanal:', err);
+      notify(err?.message ?? 'Não foi possível gerar o resumo.');
+    } finally {
+      setWeekReportLoading(false);
+    }
+  };
+
   const refreshSquad = async () => {
     const ws = await findWorkspace(session.user.id);
 
@@ -520,7 +726,7 @@ useEffect(() => {
       setIsPersonal(ws.personal);
     } else {
       // Saiu da última equipe: volta para um espaço pessoal
-      setSquadId(await createPersonalWorkspace(session.user.id));
+      setSquadId(await createPersonalWorkspace());
       setIsPersonal(true);
     }
   };
@@ -532,7 +738,10 @@ useEffect(() => {
 
   const saveExercise = (updatedEx: Exercise) => {
     if (!editingExercise) return;
-    saveExerciseToDB(updatedEx).catch(console.error);
+    saveExerciseToDB(updatedEx).catch(err => {
+      console.error(err);
+      notify('Não foi possível salvar o exercício.');
+    });
     setSquad(prev => ({
       ...prev,
       weeklyPlan: prev.weeklyPlan.map(day =>
@@ -554,7 +763,7 @@ useEffect(() => {
       .single();
     if (error) {
       console.error('Erro ao criar exercício:', error);
-      alert('Erro ao criar exercício.');
+      notify('Não foi possível criar o exercício.');
       return false;
     }
     if (data) setTrackedExercises(prev => [...prev, data as { id: string; name: string }]);
@@ -562,7 +771,8 @@ useEffect(() => {
   };
 
   const deleteTrackedExercise = async (id: string) => {
-    await supabase.from('tracked_exercises').delete().eq('id', id);
+    const { error } = await supabase.from('tracked_exercises').delete().eq('id', id).eq('user_id', session.user.id);
+    if (error) { console.error(error); notify('Não foi possível remover o exercício.'); return; }
     setTrackedExercises(prev => prev.filter(e => e.id !== id));
     setLoadHistory(prev => { const n = { ...prev }; delete n[id]; return n; });
     setLoadInputs(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -576,7 +786,12 @@ useEffect(() => {
       .insert({ tracked_exercise_id: trackedExId, user_id: session.user.id, date: today, load_notes: notes.trim() })
       .select('id, date, load_notes')
       .single();
-    if (!error && data) {
+    if (error || !data) {
+      console.error('Erro ao salvar carga:', error);
+      notify('Não foi possível salvar a carga. Tente de novo.');
+      return;
+    }
+    {
       setLoadHistory(prev => ({
         ...prev,
         [trackedExId]: [{ id: data.id, date: data.date, load_notes: data.load_notes }, ...(prev[trackedExId] ?? [])],
@@ -588,7 +803,8 @@ useEffect(() => {
   };
 
   const deleteLoad = async (trackedExId: string, loadId: string) => {
-    await supabase.from('exercise_loads').delete().eq('id', loadId);
+    const { error } = await supabase.from('exercise_loads').delete().eq('id', loadId).eq('user_id', session.user.id);
+    if (error) { console.error(error); notify('Não foi possível remover o registro.'); return; }
     setLoadHistory(prev => ({
       ...prev,
       [trackedExId]: (prev[trackedExId] ?? []).filter(e => e.id !== loadId),
@@ -638,7 +854,7 @@ useEffect(() => {
 
     const newCompleted = !ex.completed;
 
-    await supabase
+    const { error } = await supabase
       .from('exercise_progress')
       .upsert({
         exercise_id: exerciseId,
@@ -646,6 +862,13 @@ useEffect(() => {
         completed: newCompleted,
         date: localDateStr(),
       }, { onConflict: 'exercise_id,user_id,date' });
+
+    // Sem isso a marcação some ao recarregar e o usuário não percebe
+    if (error) {
+      console.error('Erro ao marcar exercício:', error);
+      notify('Não foi possível salvar. Verifique sua conexão.');
+      return;
+    }
 
     setSquad(prev => ({
       ...prev,
@@ -664,12 +887,17 @@ useEffect(() => {
   const resetDay = async (dayId: string) => {
     const day = squad.weeklyPlan.find(d => d.id === dayId);
     if (day && day.exercises.length > 0) {
-      await supabase
+      const { error } = await supabase
         .from('exercise_progress')
         .delete()
         .eq('user_id', session.user.id)
         .eq('date', localDateStr())
         .in('exercise_id', day.exercises.map(e => e.id));
+      if (error) {
+        console.error('Erro ao resetar o dia:', error);
+        notify('Não foi possível resetar o dia.');
+        return;
+      }
     }
     setSquad(prev => ({
       ...prev,
@@ -692,6 +920,14 @@ useEffect(() => {
 
     setSetProgress(prev => ({ ...prev, [exercise.id]: updated }));
 
+    // Registra a série (marcada/desmarcada) junto com peso e reps
+    persistSetLog(
+      exercise.id,
+      setIndex,
+      setLoadData[exercise.id]?.[setIndex] ?? { weight: '', reps: '' },
+      updated[setIndex]
+    );
+
     if (allDone && !wasAllDone && !exercise.completed) toggleExercise(dayId, exercise.id);
     if (!allDone && wasAllDone && exercise.completed) toggleExercise(dayId, exercise.id);
 
@@ -699,16 +935,12 @@ useEffect(() => {
       const secs = parseRestSeconds(exercise.rest);
       if (secs > 0) setRestTimer({ exerciseId: exercise.id, remaining: secs, total: secs });
 
-      // PR check
-      const weight = parseFloat(setLoadData[exercise.id]?.[setIndex]?.weight ?? '');
-      if (!isNaN(weight) && weight > 0) {
-        const stored: Record<string, number> = JSON.parse(localStorage.getItem('kronos_pr') ?? '{}');
-        if (weight > (stored[exercise.id] ?? 0)) {
-          stored[exercise.id] = weight;
-          localStorage.setItem('kronos_pr', JSON.stringify(stored));
-          setPrIds(prev => new Set(prev).add(exercise.id));
-          setTimeout(() => setPrIds(prev => { const s = new Set(prev); s.delete(exercise.id); return s; }), 6000);
-        }
+      // Recorde: compara com o maior peso já registrado no banco
+      const weight = parseFloat((setLoadData[exercise.id]?.[setIndex]?.weight ?? '').replace(',', '.'));
+      if (!isNaN(weight) && weight > 0 && weight > (personalRecords[exercise.id] ?? 0)) {
+        setPersonalRecords(prev => ({ ...prev, [exercise.id]: weight }));
+        setPrIds(prev => new Set(prev).add(exercise.id));
+        setTimeout(() => setPrIds(prev => { const s = new Set(prev); s.delete(exercise.id); return s; }), 6000);
       }
     } else {
       setRestTimer(prev => prev?.exerciseId === exercise.id ? null : prev);
@@ -716,12 +948,53 @@ useEffect(() => {
   };
 
   const handleLoadChange = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', val: string) => {
+    let updatedSet = { weight: '', reps: '' };
+
     setSetLoadData(prev => {
       const sets = prev[exerciseId] ? [...prev[exerciseId]] : [];
       while (sets.length <= setIndex) sets.push({ weight: '', reps: '' });
       sets[setIndex] = { ...sets[setIndex], [field]: val };
+      updatedSet = sets[setIndex];
       return { ...prev, [exerciseId]: sets };
     });
+
+    // Grava no banco com atraso: evita uma requisição por tecla digitada
+    const key = `${exerciseId}:${setIndex}`;
+    clearTimeout(loadSaveTimers.current[key]);
+    loadSaveTimers.current[key] = setTimeout(() => {
+      persistSetLog(exerciseId, setIndex, updatedSet);
+    }, 700);
+  };
+
+  // Salva (ou atualiza) uma série no banco
+  const persistSetLog = async (
+    exerciseId: string,
+    setIndex: number,
+    values: { weight: string; reps: string },
+    done?: boolean
+  ) => {
+    const weight = values.weight.trim() === '' ? null : Number(values.weight.replace(',', '.'));
+    const reps = values.reps.trim() === '' ? null : parseInt(values.reps, 10);
+
+    const row: Record<string, unknown> = {
+      user_id: session.user.id,
+      exercise_id: exerciseId,
+      date: localDateStr(),
+      set_index: setIndex,
+      weight: Number.isFinite(weight as number) ? weight : null,
+      reps: Number.isFinite(reps as number) ? reps : null,
+      updated_at: new Date().toISOString(),
+    };
+    if (done !== undefined) row.done = done;
+
+    const { error } = await supabase
+      .from('set_logs')
+      .upsert(row, { onConflict: 'user_id,exercise_id,date,set_index' });
+
+    if (error) {
+      console.error('Erro ao salvar carga da série:', error);
+      notify('Não foi possível salvar a carga.');
+    }
   };
 
   const addExercise = (dayId: string) => {
@@ -733,7 +1006,10 @@ useEffect(() => {
       rest: '60s',
       completed: false
     };
-    addExerciseToDB(dayId, newEx).catch(console.error);
+    addExerciseToDB(dayId, newEx).catch(err => {
+      console.error(err);
+      notify('Não foi possível criar o exercício.');
+    });
     setSquad(prev => ({
       ...prev,
       weeklyPlan: prev.weeklyPlan.map(day =>
@@ -744,7 +1020,10 @@ useEffect(() => {
   };
 
   const deleteExercise = (dayId: string, exId: string) => {
-    deleteExerciseFromDB(exId).catch(console.error);
+    deleteExerciseFromDB(exId).catch(err => {
+      console.error(err);
+      notify('Não foi possível remover o exercício.');
+    });
     setSquad(prev => ({
       ...prev,
       weeklyPlan: prev.weeklyPlan.map(day =>
@@ -770,32 +1049,6 @@ useEffect(() => {
       });
   };
 
-  const saveAsTemplate = (dayId: string) => {
-    const day = squad.weeklyPlan.find(d => d.id === dayId);
-    if (!day || !day.focus || day.exercises.length === 0) return;
-
-    const newTemplate = {
-      id: crypto.randomUUID(),
-      name: day.focus,
-      exercises: day.exercises.map(ex => ({ ...ex, completed: false }))
-    };
-
-    setSquad(prev => {
-      const existingIndex = prev.templates.findIndex(t => t.name.toLowerCase() === day.focus?.toLowerCase());
-      const newTemplates = [...prev.templates];
-      
-      if (existingIndex >= 0) {
-        newTemplates[existingIndex] = newTemplate;
-      } else {
-        newTemplates.push(newTemplate);
-      }
-
-      return { ...prev, templates: newTemplates };
-    });
-    
-    alert(`Treino "${day.focus}" salvo nos modelos!`);
-  };
-
   const loadTemplate = (dayId: string, templateId: string) => {
     const template = squad.templates.find(t => t.id === templateId);
     if (!template) return;
@@ -817,12 +1070,12 @@ useEffect(() => {
   const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
-    <div className="flex h-screen bg-[#0A0A0A] text-[#E8E8E8] font-sans overflow-hidden">
+    <div className={`flex h-screen bg-[var(--bg)] text-[var(--text)] overflow-hidden theme-${theme}`}>
       {/* Sidebar — só aparece em telas md+ */}
-      <aside className="hidden md:flex w-52 border-r border-[#1F1F1F] flex-col py-6 bg-[#0A0A0A] z-20 shrink-0">
+      <aside className="hidden md:flex w-52 border-r border-[var(--border)] flex-col py-6 bg-[var(--bg)] z-20 shrink-0">
         <div className="px-5 mb-8">
-          <p className="text-[10px] text-[#616161] font-medium uppercase tracking-widest mb-1.5">{isPersonal ? 'Treino' : 'Squad'}</p>
-          <p className="text-sm font-semibold text-[#E8E8E8] truncate">{squad.name || 'Kronos'}</p>
+          <p className="text-[10px] text-[var(--text-2)] font-medium uppercase tracking-widest mb-1.5">{isPersonal ? 'Treino' : 'Squad'}</p>
+          <p className="text-sm font-semibold text-[var(--text)] truncate">{squad.name || 'Kronos'}</p>
         </div>
 
         <nav className="flex flex-col gap-0.5 px-3 flex-1">
@@ -842,38 +1095,48 @@ useEffect(() => {
           {/* Header */}
           <header className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="text-lg font-semibold text-[#E8E8E8]">
+              <h2 className="font-display text-[26px] font-bold text-[var(--text)]">
                 {currentView === 'treino' && 'Treino'}
                 {currentView === 'dieta' && 'Dieta'}
                 {currentView === 'settings' && 'Configurações'}
                 {currentView === 'ia' && 'Kronos AI'}
               </h2>
-              <p className="text-xs text-[#616161] mt-0.5 capitalize">
+              <p className="text-xs text-[var(--text-2)] mt-0.5 capitalize">
                 {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
               </p>
             </div>
-            <AppSwitcher currentApp="treino" userEmail={session?.user?.email} />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleTheme}
+                title={theme === 'noite' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+                aria-label="Alternar tema"
+                className="p-2 rounded-lg text-[var(--text-2)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
+              >
+                {theme === 'noite' ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
+              <AppSwitcher currentApp="treino" userEmail={session?.user?.email} />
+            </div>
           </header>
 
           {/* Sub-abas do Treino */}
           {currentView === 'treino' && (
-            <div className="flex gap-1 p-1 mb-6 bg-[#111111] border border-[#1F1F1F] rounded-xl w-full sm:w-fit">
+            <div className="flex gap-6 mb-6 border-b border-[var(--border)]">
               {([
-                { id: 'hoje',      label: 'Hoje',      icon: <LayoutDashboard size={14} /> },
-                { id: 'semana',    label: 'Semana',    icon: <Calendar size={14} /> },
-                { id: 'progresso', label: 'Progresso', icon: <TrendingUp size={14} /> },
-              ] as { id: TreinoTab; label: string; icon: ReactNode }[]).map(tab => (
+                { id: 'hoje',      label: 'Hoje' },
+                { id: 'semana',    label: 'Semana' },
+                { id: 'progresso', label: 'Progresso' },
+              ] as { id: TreinoTab; label: string }[]).map(tab => (
                 <button
                   key={tab.id}
                   onClick={() => setTreinoTab(tab.id)}
-                  className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
-                    treinoTab === tab.id
-                      ? 'bg-[#1F1F1F] text-[#E8E8E8]'
-                      : 'text-[#616161] hover:text-[#E8E8E8]'
+                  className={`relative pb-2.5 text-[13.5px] font-medium transition-colors ${
+                    treinoTab === tab.id ? 'text-[var(--text)]' : 'text-[var(--text-2)] hover:text-[var(--text)]'
                   }`}
                 >
-                  {tab.icon}
                   {tab.label}
+                  {treinoTab === tab.id && (
+                    <span className="absolute left-0 right-0 -bottom-px h-[2px] rounded-full bg-[var(--accent)]" />
+                  )}
                 </button>
               ))}
             </div>
@@ -882,48 +1145,58 @@ useEffect(() => {
           {currentView === 'treino' && treinoTab === 'hoje' && squadLoading && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-pulse">
               <div className="lg:col-span-2 space-y-4">
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-48" />
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-14" />
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-14" />
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl h-48" />
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl h-14" />
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl h-14" />
               </div>
               <div className="space-y-4">
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-24" />
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl h-40" />
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl h-24" />
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl h-40" />
               </div>
             </div>
           )}
 
           {currentView === 'treino' && treinoTab === 'hoje' && !squadLoading && (
             <>
-            {/* Mobile: quick stats row (streak + mini-week) */}
+            {/* Sequência + semana */}
             <div className="flex gap-3 mb-4 lg:hidden">
               {(() => {
-                const { color } = getStreakStyle(diasTreinados);
+                const { badge } = getStreakStyle(diasTreinados);
                 return (
-                  <div className="flex-1 bg-[#111111] border border-[#1F1F1F] rounded-xl p-4">
-                    <p className="text-[10px] text-[#616161] uppercase tracking-widest mb-1.5">Sequência</p>
-                    <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-bold tabular-nums" style={{ color }}>{diasTreinados}</span>
-                      <span className="text-xs text-[#616161]">dias</span>
+                  <div className="flex-1 relative overflow-hidden bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+                    {/* Brilho radial no canto */}
+                    <span className="pointer-events-none absolute -top-10 -right-10 w-[120px] h-[120px] rounded-full"
+                      style={{ background: 'radial-gradient(circle, rgba(139,92,246,.16), transparent 70%)' }} />
+                    <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">Sequência</p>
+                    <div className="flex items-baseline gap-1.5 mt-2.5">
+                      <span className="font-display text-[30px] font-extrabold tabular-nums tracking-[-0.03em] text-[var(--text)]">{diasTreinados}</span>
+                      <span className="text-[13px] font-medium text-[var(--text-2)]">
+                        dias <span className="inline-block animate-pulse">🔥</span>
+                      </span>
                     </div>
+                    {badge && (
+                      <div className="inline-block mt-3 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] px-2.5 py-[5px] text-[10.5px] font-semibold">
+                        recorde {badge}
+                      </div>
+                    )}
                   </div>
                 );
               })()}
-              <div className="flex-1 bg-[#111111] border border-[#1F1F1F] rounded-xl p-4">
-                <p className="text-[10px] text-[#616161] uppercase tracking-widest mb-3">Esta semana</p>
-                <div className="flex gap-1 items-end">
-                  {squad.weeklyPlan.map((day, idx) => {
+              <div className="w-[132px] bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+                <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">Esta semana</p>
+                <div className="flex gap-1.5 mt-3.5">
+                  {squad.weeklyPlan.map(day => {
                     const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
-                    const isToday = idx === todayIndex;
                     return (
-                      <div key={day.id} className={`flex-1 rounded-sm transition-all ${
-                        isDone ? 'bg-emerald-500 h-5' :
-                        isToday ? 'bg-emerald-500/40 h-4' :
-                        day.exercises.length > 0 ? 'bg-[#2a2a2a] h-3' : 'bg-[#1a1a1a] h-2'
-                      }`} />
+                      <span key={day.id} className="w-[9px] h-[9px] rounded-full transition-colors"
+                        style={{ background: isDone ? 'var(--accent)' : 'var(--border)' }} />
                     );
                   })}
                 </div>
+                <p className="text-[11px] font-medium text-[var(--text-3)] mt-3.5">
+                  {squad.weeklyPlan.filter(d => d.exercises.length > 0 && d.exercises.every(e => e.completed)).length} de{' '}
+                  {squad.weeklyPlan.filter(d => d.exercises.length > 0).length} treinos
+                </p>
               </div>
             </div>
 
@@ -932,25 +1205,25 @@ useEffect(() => {
               <div className="lg:col-span-2 space-y-4">
 
                 {/* Hero card: foco + progresso */}
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5 md:p-6">
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5 md:p-6">
                   <div className="flex items-start justify-between mb-5">
                     <div className="flex-1 group relative">
-                      <p className="text-[10px] text-[#3a3a3a] mb-2 uppercase tracking-[0.2em] font-semibold">{currentDayPlan.name}</p>
+                      <p className="text-[10px] text-[var(--text-3)] mb-2 uppercase tracking-[0.2em] font-semibold">{currentDayPlan.name}</p>
                       <input
                         type="text"
                         value={currentDayPlan.focus || ''}
                         onChange={(e) => updateDayFocus(activeDayId, e.target.value)}
                         placeholder="FOCO DO TREINO"
-                        className="bg-transparent border-none text-[#E8E8E8] p-0 focus:ring-0 outline-none placeholder:text-[#1e1e1e] w-full uppercase"
+                        className="bg-transparent border-none text-[var(--text)] p-0 focus:ring-0 outline-none placeholder:text-[var(--border)] w-full uppercase"
                         style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 900, fontSize: 'clamp(1.6rem, 5vw, 2.4rem)', letterSpacing: '0.06em' }}
                       />
                       {squad.templates.length > 0 && (
-                        <div className="absolute top-full left-0 mt-2 w-56 bg-[#161616] border border-[#1F1F1F] rounded-xl z-30 hidden group-focus-within:block max-h-44 overflow-y-auto">
+                        <div className="absolute top-full left-0 mt-2 w-56 bg-[var(--surface-2)] border border-[var(--border)] rounded-xl z-30 hidden group-focus-within:block max-h-44 overflow-y-auto">
                           {squad.templates.map(t => (
                             <button key={t.id} onClick={() => loadTemplate(activeDayId, t.id)}
-                              className="w-full text-left px-4 py-2.5 text-sm text-[#E8E8E8] hover:bg-[#1F1F1F] transition-colors flex justify-between items-center">
+                              className="w-full text-left px-4 py-2.5 text-sm text-[var(--text)] hover:bg-[var(--border)] transition-colors flex justify-between items-center">
                               <span>{t.name}</span>
-                              <span className="text-xs text-[#616161]">{t.exercises.length} exs</span>
+                              <span className="text-xs text-[var(--text-2)]">{t.exercises.length} exs</span>
                             </button>
                           ))}
                         </div>
@@ -961,7 +1234,7 @@ useEffect(() => {
                       <div className="relative">
                         <button
                           onClick={() => setShowDayPicker(v => !v)}
-                          className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors"
+                          className="p-2 rounded-lg text-[var(--text-3)] hover:text-[var(--text-2)] hover:bg-[var(--surface-3)] transition-colors"
                           title="Trocar treino">
                           <Calendar size={15} />
                         </button>
@@ -972,7 +1245,7 @@ useEffect(() => {
                               animate={{ opacity: 1, scale: 1, y: 0 }}
                               exit={{ opacity: 0, scale: 0.95, y: -4 }}
                               transition={{ duration: 0.12 }}
-                              className="absolute right-0 top-full mt-1 bg-[#161616] border border-[#252525] rounded-xl z-40 overflow-hidden shadow-xl min-w-[160px]">
+                              className="absolute right-0 top-full mt-1 bg-[var(--surface-2)] border border-[var(--border)] rounded-xl z-40 overflow-hidden shadow-xl min-w-[160px]">
                               {squad.weeklyPlan.map((day, idx) => {
                                 const isActive = idx === activeDayIndex;
                                 const isToday = idx === todayIndex;
@@ -981,11 +1254,11 @@ useEffect(() => {
                                   <button key={day.id}
                                     onClick={() => { setActiveDayIndex(idx); setShowDayPicker(false); }}
                                     className={`w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors
-                                      ${isActive ? 'bg-[#1e1e1e] text-emerald-400' : 'text-[#616161] hover:bg-[#1a1a1a] hover:text-[#E8E8E8]'}`}>
+                                      ${isActive ? 'bg-[var(--border)] text-[var(--accent)]' : 'text-[var(--text-2)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'}`}>
                                     <span>{day.name}</span>
                                     <div className="flex items-center gap-1.5">
-                                      {isDone && <span className="text-[10px] text-emerald-600">✓</span>}
-                                      {isToday && <span className="text-[9px] text-emerald-500 font-bold">HOJE</span>}
+                                      {isDone && <span className="text-[10px] text-[var(--btn-bg)]">✓</span>}
+                                      {isToday && <span className="text-[9px] text-[var(--accent)] font-bold">HOJE</span>}
                                     </div>
                                   </button>
                                 );
@@ -995,7 +1268,7 @@ useEffect(() => {
                         </AnimatePresence>
                       </div>
                       <button onClick={() => resetDay(activeDayId)}
-                        className="p-2 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors"
+                        className="p-2 rounded-lg text-[var(--text-3)] hover:text-[var(--text-2)] hover:bg-[var(--surface-3)] transition-colors"
                         title="Resetar">
                         <RotateCcw size={15} />
                       </button>
@@ -1004,18 +1277,18 @@ useEffect(() => {
 
                   <div className="flex items-end justify-between mb-3">
                     <div>
-                      <span className="text-4xl font-bold text-[#E8E8E8] tabular-nums">{completedCount}</span>
-                      <span className="text-xl text-[#616161] font-medium"> / {totalCount}</span>
+                      <span className="text-4xl font-bold text-[var(--text)] tabular-nums">{completedCount}</span>
+                      <span className="text-xl text-[var(--text-2)] font-medium"> / {totalCount}</span>
                     </div>
-                    <span className={`text-sm font-semibold tabular-nums ${progress === 100 ? 'text-emerald-400' : 'text-[#616161]'}`}>
+                    <span className={`text-sm font-semibold tabular-nums ${progress === 100 ? 'text-[var(--accent)]' : 'text-[var(--text-2)]'}`}>
                       {Math.round(progress)}%
                     </span>
                   </div>
-                  <div className="w-full bg-[#1a1a1a] h-1 rounded-full overflow-hidden">
+                  <div className="w-full bg-[var(--surface-3)] h-1 rounded-full overflow-hidden">
                     <motion.div
                       initial={{ width: 0 }}
                       animate={{ width: `${progress}%` }}
-                      className={`h-full rounded-full transition-colors ${progress === 100 ? 'bg-emerald-400' : 'bg-[#E8E8E8]'}`}
+                      className={`h-full rounded-full transition-colors ${progress === 100 ? 'bg-[var(--accent)]' : 'bg-[var(--text)]'}`}
                     />
                   </div>
                 </div>
@@ -1032,14 +1305,15 @@ useEffect(() => {
                         onSetToggle={(setIndex) => handleSetToggle(activeDayId, ex, setIndex)}
                         onLoadChange={(setIndex, field, val) => handleLoadChange(ex.id, setIndex, field, val)}
                         isPR={prIds.has(ex.id)}
+                        previous={previousLoads[ex.id]}
                         showEdit={false}
                       />
                     ))
                   ) : (
                     <div className="py-16 text-center">
-                      <Dumbbell className="w-8 h-8 text-[#1F1F1F] mx-auto mb-3" />
-                      <p className="text-sm text-[#616161]">Nenhum exercício para hoje</p>
-                      <p className="text-xs text-[#3a3a3a] mt-1">Descanso merecido</p>
+                      <Dumbbell className="w-8 h-8 text-[var(--border)] mx-auto mb-3" />
+                      <p className="text-sm text-[var(--text-2)]">Nenhum exercício para hoje</p>
+                      <p className="text-xs text-[var(--text-3)] mt-1">Descanso merecido</p>
                     </div>
                   )}
                 </div>
@@ -1052,12 +1326,12 @@ useEffect(() => {
                 {(() => {
                   const { color, badge } = getStreakStyle(diasTreinados);
                   return (
-                    <div className="hidden lg:block bg-[#111111] border border-[#1F1F1F] rounded-xl p-5"
+                    <div className="hidden lg:block bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5"
                       style={diasTreinados >= 7 ? { borderColor: color + '40' } : undefined}>
-                      <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-3">Sequência</p>
+                      <p className="text-xs text-[var(--text-2)] uppercase tracking-widest font-medium mb-3">Sequência</p>
                       <div className="flex items-baseline gap-1.5">
                         <span className="text-3xl font-bold tabular-nums" style={{ color }}>{diasTreinados}</span>
-                        <span className="text-sm text-[#616161]">dias</span>
+                        <span className="text-sm text-[var(--text-2)]">dias</span>
                       </div>
                       {badge && (
                         <p className="text-xs mt-2 font-medium" style={{ color }}>{badge}</p>
@@ -1068,8 +1342,8 @@ useEffect(() => {
 
                 {/* Squad — só faz sentido quando treina com outras pessoas */}
                 {!isPersonal && (
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
-                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-4">Squad</p>
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                  <p className="text-xs text-[var(--text-2)] uppercase tracking-widest font-medium mb-4">Squad</p>
                   <div className="space-y-3">
                     {squad.members.map(member => {
                       const streak = memberStreaks[member.id] ?? 0;
@@ -1077,20 +1351,20 @@ useEffect(() => {
                         <div key={member.id} className="flex items-center gap-3">
                           <div className="relative shrink-0">
                             <img src={member.avatar} alt={member.name}
-                              className="w-8 h-8 rounded-full bg-[#1a1a1a]"
+                              className="w-8 h-8 rounded-full bg-[var(--surface-3)]"
                               referrerPolicy="no-referrer" />
                             {member.isOnline && (
-                              <div className="absolute bottom-0 right-0 w-2 h-2 bg-emerald-400 border border-[#111111] rounded-full" />
+                              <div className="absolute bottom-0 right-0 w-2 h-2 bg-[var(--accent)] border border-[var(--surface)] rounded-full" />
                             )}
                           </div>
-                          <p className="text-sm text-[#E8E8E8] font-medium truncate flex-1">{member.name}</p>
+                          <p className="text-sm text-[var(--text)] font-medium truncate flex-1">{member.name}</p>
                           {streak > 0 && (
                             <span className="text-xs shrink-0 font-medium" style={{ color: getStreakStyle(streak).color }}>
                               🔥 {streak}
                             </span>
                           )}
                           {member.role === 'admin' && (
-                            <span className="text-[10px] text-[#616161] shrink-0">admin</span>
+                            <span className="text-[10px] text-[var(--text-2)] shrink-0">admin</span>
                           )}
                         </div>
                       );
@@ -1100,21 +1374,21 @@ useEffect(() => {
                 )}
 
                 {/* Semana — hidden on mobile (shown in quick-stats above) */}
-                <div className="hidden lg:block bg-[#111111] border border-[#1F1F1F] rounded-xl p-5">
-                  <p className="text-xs text-[#616161] uppercase tracking-widest font-medium mb-4">Esta Semana</p>
+                <div className="hidden lg:block bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                  <p className="text-xs text-[var(--text-2)] uppercase tracking-widest font-medium mb-4">Esta Semana</p>
                   <div className="space-y-2">
                     {squad.weeklyPlan.map((day, idx) => {
                       const isToday = idx === todayIndex;
                       const isDone = day.exercises.length > 0 && day.exercises.every(e => e.completed);
                       return (
-                        <div key={day.id} className={`flex items-center gap-3 py-1.5 px-2 rounded-lg transition-colors ${isToday ? 'bg-[#1a1a1a]' : ''}`}>
+                        <div key={day.id} className={`flex items-center gap-3 py-1.5 px-2 rounded-lg transition-colors ${isToday ? 'bg-[var(--surface-3)]' : ''}`}>
                           <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
-                            isDone ? 'bg-emerald-500' : isToday ? 'bg-[#2a2a2a] ring-1 ring-emerald-500/40' : 'bg-[#1a1a1a]'
+                            isDone ? 'bg-[var(--accent)]' : isToday ? 'bg-[var(--border-strong)] ring-1 ring-[var(--accent-line)]' : 'bg-[var(--surface-3)]'
                           }`}>
-                            {isDone && <CheckCircle2 size={12} className="text-white" />}
+                            {isDone && <CheckCircle2 size={12} className="text-[var(--btn-fg)]" />}
                           </div>
-                          <p className={`text-sm flex-1 ${isToday ? 'text-[#E8E8E8] font-medium' : 'text-[#616161]'}`}>{day.name}</p>
-                          <span className="text-[10px] text-[#3a3a3a]">{day.exercises.length}</span>
+                          <p className={`text-sm flex-1 ${isToday ? 'text-[var(--text)] font-medium' : 'text-[var(--text-2)]'}`}>{day.name}</p>
+                          <span className="text-[10px] text-[var(--text-3)]">{day.exercises.length}</span>
                         </div>
                       );
                     })}
@@ -1141,15 +1415,15 @@ useEffect(() => {
                         style={{ minWidth: 44 }}>
                         <div className={`w-9 h-9 rounded-full flex items-center justify-center transition-all text-xs font-semibold
                           ${isSelected
-                            ? isDone ? 'bg-emerald-500 text-white' : 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500'
-                            : isDone ? 'bg-emerald-500/15 text-emerald-600'
-                            : isToday ? 'bg-[#1a1a1a] text-[#E8E8E8] ring-1 ring-[#2a2a2a]'
-                            : 'bg-transparent text-[#3a3a3a]'
+                            ? isDone ? 'bg-[var(--accent)] text-[var(--btn-fg)]' : 'bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]'
+                            : isDone ? 'bg-[var(--accent-soft)] text-[var(--btn-bg)]'
+                            : isToday ? 'bg-[var(--surface-3)] text-[var(--text)] ring-1 ring-[var(--border-strong)]'
+                            : 'bg-transparent text-[var(--text-3)]'
                           }`}>
                           {isDone ? <CheckCircle2 size={16} /> : day.name.slice(0, 3)}
                         </div>
                         {isToday && (
-                          <div className={`w-1 h-1 rounded-full ${isSelected ? 'bg-emerald-400' : 'bg-[#2a2a2a]'}`} />
+                          <div className={`w-1 h-1 rounded-full ${isSelected ? 'bg-[var(--accent)]' : 'bg-[var(--border-strong)]'}`} />
                         )}
                       </button>
                     );
@@ -1162,50 +1436,50 @@ useEffect(() => {
                   if (!day) return null;
                   const isToday = selectedWeekDay === todayIndex;
                   return (
-                    <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
+                    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
                       {/* Day header */}
-                      <div className="flex items-center justify-between px-4 py-3.5 border-b border-[#1a1a1a]">
+                      <div className="flex items-center justify-between px-4 py-3.5 border-b border-[var(--surface-3)]">
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-0.5">
-                            <h3 className="text-sm font-semibold text-[#E8E8E8]">{day.name}</h3>
-                            {isToday && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
+                            <h3 className="text-sm font-semibold text-[var(--text)]">{day.name}</h3>
+                            {isToday && <span className="text-[9px] bg-[var(--accent-soft)] text-[var(--accent)] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
                           </div>
                           <input
                             type="text"
                             value={day.focus || ''}
                             onChange={(e) => updateDayFocus(day.id, e.target.value)}
                             placeholder="Foco do treino..."
-                            className="bg-transparent border-none text-xs text-[#616161] p-0 focus:ring-0 outline-none placeholder:text-[#2a2a2a] w-full"
+                            className="bg-transparent border-none text-xs text-[var(--text-2)] p-0 focus:ring-0 outline-none placeholder:text-[var(--border-strong)] w-full"
                           />
                         </div>
                         <button onClick={() => addExercise(day.id)}
-                          className="w-8 h-8 rounded-full bg-[#1a1a1a] flex items-center justify-center text-[#616161] shrink-0 ml-2">
+                          className="w-8 h-8 rounded-full bg-[var(--surface-3)] flex items-center justify-center text-[var(--text-2)] shrink-0 ml-2">
                           <Plus size={14} />
                         </button>
                       </div>
                       {/* Exercises */}
-                      <div className="divide-y divide-[#1a1a1a]">
+                      <div className="divide-y divide-[var(--surface-3)]">
                         {day.exercises.length > 0 ? (
                           day.exercises.map(ex => (
                             <div key={ex.id} className="flex items-center gap-3 px-4 py-3.5">
                               <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-[#E8E8E8] truncate">{ex.name}</p>
-                                <p className="text-xs text-[#3a3a3a] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
+                                <p className="text-sm font-medium text-[var(--text)] truncate">{ex.name}</p>
+                                <p className="text-xs text-[var(--text-3)] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
                               </div>
                               <div className="flex gap-2 shrink-0">
                                 <button onClick={() => openEditor(day.id, ex)}
-                                  className="w-8 h-8 rounded-lg bg-[#1a1a1a] flex items-center justify-center text-[#616161]">
+                                  className="w-8 h-8 rounded-lg bg-[var(--surface-3)] flex items-center justify-center text-[var(--text-2)]">
                                   <Edit3 size={13} />
                                 </button>
                                 <button onClick={() => deleteExercise(day.id, ex.id)}
-                                  className="w-8 h-8 rounded-lg bg-[#1a1a1a] flex items-center justify-center text-[#3a3a3a]">
+                                  className="w-8 h-8 rounded-lg bg-[var(--surface-3)] flex items-center justify-center text-[var(--text-3)]">
                                   <Trash2 size={13} />
                                 </button>
                               </div>
                             </div>
                           ))
                         ) : (
-                          <div className="py-12 flex flex-col items-center gap-2 text-[#3a3a3a]">
+                          <div className="py-12 flex flex-col items-center gap-2 text-[var(--text-3)]">
                             <Dumbbell size={24} />
                             <p className="text-xs">Dia de descanso</p>
                           </div>
@@ -1219,12 +1493,12 @@ useEffect(() => {
               {/* Desktop: grid view */}
               <div className="hidden md:grid grid-cols-2 xl:grid-cols-4 gap-4">
                 {squad.weeklyPlan.map((day, idx) => (
-                  <div key={day.id} className={`flex flex-col gap-3 p-4 rounded-xl border transition-all ${idx === todayIndex ? 'bg-[#111111] border-[#2a2a2a]' : 'bg-[#0e0e0e] border-[#1F1F1F]'}`}>
+                  <div key={day.id} className={`flex flex-col gap-3 p-4 rounded-xl border transition-all ${idx === todayIndex ? 'bg-[var(--surface)] border-[var(--border-strong)]' : 'bg-[var(--surface-2)] border-[var(--border)]'}`}>
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className={`text-sm font-semibold ${idx === todayIndex ? 'text-[#E8E8E8]' : 'text-[#616161]'}`}>{day.name}</h3>
-                          {idx === todayIndex && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
+                          <h3 className={`text-sm font-semibold ${idx === todayIndex ? 'text-[var(--text)]' : 'text-[var(--text-2)]'}`}>{day.name}</h3>
+                          {idx === todayIndex && <span className="text-[9px] bg-[var(--accent-soft)] text-[var(--accent)] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide">Hoje</span>}
                         </div>
                         <div className="relative group/focus mt-0.5">
                           <input
@@ -1232,15 +1506,15 @@ useEffect(() => {
                             value={day.focus || ''}
                             onChange={(e) => updateDayFocus(day.id, e.target.value)}
                             placeholder="Foco..."
-                            className="bg-transparent border-none text-[10px] text-[#616161] p-0 focus:ring-0 outline-none placeholder:text-[#2a2a2a] w-full"
+                            className="bg-transparent border-none text-[10px] text-[var(--text-2)] p-0 focus:ring-0 outline-none placeholder:text-[var(--border-strong)] w-full"
                           />
                           {squad.templates.length > 0 && (
-                            <div className="absolute top-full left-0 mt-1 w-44 bg-[#161616] border border-[#1F1F1F] rounded-lg z-30 hidden group-focus-within/focus:block max-h-36 overflow-y-auto">
+                            <div className="absolute top-full left-0 mt-1 w-44 bg-[var(--surface-2)] border border-[var(--border)] rounded-lg z-30 hidden group-focus-within/focus:block max-h-36 overflow-y-auto">
                               {squad.templates.map(t => (
                                 <button key={t.id} onClick={() => loadTemplate(day.id, t.id)}
-                                  className="w-full text-left px-3 py-2 text-xs text-[#E8E8E8] hover:bg-[#1F1F1F] transition-colors flex justify-between">
+                                  className="w-full text-left px-3 py-2 text-xs text-[var(--text)] hover:bg-[var(--border)] transition-colors flex justify-between">
                                   <span>{t.name}</span>
-                                  <span className="text-[#616161]">{t.exercises.length}</span>
+                                  <span className="text-[var(--text-2)]">{t.exercises.length}</span>
                                 </button>
                               ))}
                             </div>
@@ -1248,7 +1522,7 @@ useEffect(() => {
                         </div>
                       </div>
                       <button onClick={() => addExercise(day.id)}
-                        className="p-1.5 rounded-lg text-[#3a3a3a] hover:text-[#616161] hover:bg-[#1a1a1a] transition-colors shrink-0">
+                        className="p-1.5 rounded-lg text-[var(--text-3)] hover:text-[var(--text-2)] hover:bg-[var(--surface-3)] transition-colors shrink-0">
                         <Plus size={14} />
                       </button>
                     </div>
@@ -1256,16 +1530,16 @@ useEffect(() => {
                       {day.exercises.length > 0 ? (
                         day.exercises.map(ex => (
                           <div key={ex.id} onClick={() => openEditor(day.id, ex)}
-                            className="group relative flex items-center gap-2.5 p-2.5 rounded-lg border border-[#1a1a1a] hover:border-[#2a2a2a] bg-[#0A0A0A] transition-all cursor-pointer">
+                            className="group relative flex items-center gap-2.5 p-2.5 rounded-lg border border-[var(--surface-3)] hover:border-[var(--border-strong)] bg-[var(--bg)] transition-all cursor-pointer">
                             <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium text-[#E8E8E8] truncate">{ex.name}</p>
-                              <p className="text-[10px] text-[#3a3a3a] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
+                              <p className="text-xs font-medium text-[var(--text)] truncate">{ex.name}</p>
+                              <p className="text-[10px] text-[var(--text-3)] mt-0.5">{ex.sets}×{ex.reps} · {ex.rest}</p>
                             </div>
                             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
                               <button onClick={(e) => { e.stopPropagation(); openEditor(day.id, ex); }}
-                                className="p-1 text-[#616161] hover:text-[#E8E8E8]"><Edit3 size={11} /></button>
+                                className="p-1 text-[var(--text-2)] hover:text-[var(--text)]"><Edit3 size={11} /></button>
                               <button onClick={(e) => { e.stopPropagation(); deleteExercise(day.id, ex.id); }}
-                                className="p-1 text-[#616161] hover:text-rose-400"><Trash2 size={11} /></button>
+                                className="p-1 text-[var(--text-2)] hover:text-[var(--danger)]"><Trash2 size={11} /></button>
                             </div>
                           </div>
                         ))
@@ -1308,20 +1582,244 @@ useEffect(() => {
 
             const dayLabels = ['S', 'T', 'Q', 'Q', 'S', 'S', 'D'];
 
+            const picked = evolutionPick ? evolution[evolutionPick] : null;
+
+            // Volume semanal por grupo muscular: séries planejadas de cada dia
+            // que tem treino, agrupadas pelo nome do exercício.
+            const volume: Record<string, number> = {};
+            for (const day of squad.weeklyPlan) {
+              for (const ex of day.exercises) {
+                const g = muscleGroupOf(ex.name);
+                volume[g] = (volume[g] ?? 0) + (ex.sets || 0);
+              }
+            }
+            const volumeRows = Object.entries(volume)
+              .filter(([, v]) => v > 0)
+              .sort((a, b) => b[1] - a[1]) as [MuscleGroup, number][];
+            const maxVolume = Math.max(1, ...volumeRows.map(([, v]) => v));
+
             return (
               <div className="space-y-8">
+                {/* Resumo da semana por IA */}
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">
+                        Resumo da semana
+                      </p>
+                      <p className="text-[11px] text-[var(--text-3)] mt-1">
+                        Treino, dieta, água e peso analisados juntos
+                      </p>
+                    </div>
+                    <button
+                      onClick={buildWeeklyReport}
+                      disabled={weekReportLoading}
+                      className="shrink-0 flex items-center gap-1.5 bg-[var(--accent-soft)] hover:bg-[var(--accent-soft)] border border-[var(--accent-line)] text-[var(--accent)] rounded-lg px-3 py-2 text-[11.5px] font-semibold transition-all disabled:opacity-50"
+                    >
+                      {weekReportLoading
+                        ? <>Gerando<span className="animate-pulse">...</span></>
+                        : <><Sparkles size={13} /> {weekReport ? 'Atualizar' : 'Gerar'}</>}
+                    </button>
+                  </div>
+
+                  {weekReport && (
+                    <motion.p
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-[13.5px] leading-relaxed text-[var(--text)] mt-4 pt-4 border-t border-[var(--border)]"
+                    >
+                      {weekReport}
+                    </motion.p>
+                  )}
+                </div>
+
+                {/* Calendário do mês */}
+                {(() => {
+                  const now = new Date();
+                  const year = now.getFullYear();
+                  const month = now.getMonth();
+                  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // Seg = 0
+                  const daysInMonth = new Date(year, month + 1, 0).getDate();
+                  const todayNum = now.getDate();
+                  const cells: (number | null)[] = [
+                    ...Array(firstDow).fill(null),
+                    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+                  ];
+                  const trainedCount = Array.from({ length: daysInMonth }, (_, i) =>
+                    trainedDates.has(localDateStr(new Date(year, month, i + 1)))
+                  ).filter(Boolean).length;
+
+                  return (
+                    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                      <div className="flex items-center justify-between mb-4">
+                        <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold capitalize">
+                          {now.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+                        </p>
+                        <span className="text-[11px] font-semibold text-[var(--accent)]">
+                          {trainedCount} {trainedCount === 1 ? 'treino' : 'treinos'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-7 gap-1.5">
+                        {['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map((d, i) => (
+                          <span key={i} className="text-center text-[9px] font-semibold text-[var(--text-3)]">{d}</span>
+                        ))}
+                        {cells.map((day, i) => {
+                          if (day === null) return <span key={`e${i}`} />;
+                          const ds = localDateStr(new Date(year, month, day));
+                          const done = trainedDates.has(ds);
+                          const isToday = day === todayNum;
+                          const future = day > todayNum;
+                          return (
+                            <div
+                              key={ds}
+                              title={`${day} — ${done ? 'treinou' : future ? '' : 'sem treino'}`}
+                              className="aspect-square rounded-md flex items-center justify-center text-[10px] font-semibold transition-colors"
+                              style={{
+                                background: done ? 'var(--accent)' : future ? 'transparent' : 'var(--surface-3)',
+                                color: done ? 'var(--bg)' : future ? 'var(--border-strong)' : 'var(--text-2)',
+                                border: isToday ? '1.5px solid var(--accent)' : '1px solid transparent',
+                              }}
+                            >
+                              {day}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Volume por grupo muscular */}
+                {volumeRows.length > 0 && (
+                  <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                    <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">
+                      Volume semanal por grupo
+                    </p>
+                    <p className="text-[11px] text-[var(--text-3)] mt-1 mb-4">
+                      Séries planejadas na semana — ajuda a ver desequilíbrio
+                    </p>
+                    <div className="space-y-2.5">
+                      {volumeRows.map(([group, sets]) => (
+                        <div key={group} className="flex items-center gap-3">
+                          <span className="w-20 shrink-0 text-[12px] font-medium text-[var(--text)]">{group}</span>
+                          <div className="flex-1 h-2 rounded-full bg-[var(--surface-3)] overflow-hidden">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${(sets / maxVolume) * 100}%` }}
+                              transition={{ type: 'spring', stiffness: 80, damping: 18 }}
+                              className="h-full rounded-full"
+                              style={{ background: MUSCLE_COLORS[group] }}
+                            />
+                          </div>
+                          <span className="w-14 shrink-0 text-right text-[11.5px] font-semibold tabular-nums text-[var(--text-2)]">
+                            {sets} {sets === 1 ? 'série' : 'séries'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Evolução de carga */}
+                {picked && (() => {
+                  const pts = picked.points;
+                  const kgs = pts.map(p => p.kg);
+                  const min = Math.min(...kgs);
+                  const max = Math.max(...kgs);
+                  const span = max - min || 1;
+                  const first = pts[0];
+                  const last = pts[pts.length - 1];
+                  const growth = first.kg > 0 ? Math.round(((last.kg - first.kg) / first.kg) * 100) : 0;
+
+                  // Normaliza para o viewBox 300×90 (y invertido: peso maior = mais alto)
+                  const coords = pts.map((p, i) => {
+                    const x = pts.length === 1 ? 150 : 6 + (i / (pts.length - 1)) * 288;
+                    const y = 78 - ((p.kg - min) / span) * 68;
+                    return `${x.toFixed(1)},${y.toFixed(1)}`;
+                  });
+                  const [lastX, lastY] = coords[coords.length - 1].split(',').map(Number);
+                  const fmtMonth = (d: string) =>
+                    new Date(d + 'T00:00:00').toLocaleDateString('pt-BR', { month: 'long' });
+
+                  return (
+                    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">
+                          Evolução de carga
+                        </p>
+                        <select
+                          value={evolutionPick ?? ''}
+                          onChange={e => setEvolutionPick(e.target.value)}
+                          className="bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2.5 py-[7px] text-[11.5px] font-semibold text-[var(--text)] outline-none focus:border-[var(--border-strong)] max-w-[55%] truncate"
+                        >
+                          {Object.entries(evolution).map(([id, e]) => (
+                            <option key={id} value={id}>{e.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex items-baseline gap-2 mt-4">
+                        <span className="font-display text-[28px] font-extrabold tracking-[-0.02em] text-[var(--text)]">
+                          {last.kg}<span className="text-base text-[var(--text-2)]"> kg</span>
+                        </span>
+                        {growth !== 0 && (
+                          <span className={`text-[11.5px] font-semibold ${growth > 0 ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>
+                            {growth > 0 ? '+' : ''}{growth}% no período
+                          </span>
+                        )}
+                      </div>
+
+                      <svg viewBox="0 0 300 90" className="w-full h-24 mt-3.5 overflow-visible">
+                        <polyline points={coords.join(' ')} fill="none" stroke="var(--accent)"
+                          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        <circle cx={lastX} cy={lastY} r="3.5" fill="var(--accent)" />
+                        <circle cx={coords[0].split(',')[0]} cy={coords[0].split(',')[1]} r="3"
+                          fill="var(--border)" stroke="var(--text-2)" />
+                      </svg>
+
+                      <div className="flex justify-between text-[10.5px] font-medium text-[var(--text-3)] mt-1.5">
+                        <span>{fmtMonth(first.date)} · {first.kg} kg</span>
+                        <span>{fmtMonth(last.date)} · {last.kg} kg</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Recordes pessoais */}
+                {Object.keys(personalRecords).length > 0 && (
+                  <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5">
+                    <p className="text-[10px] text-[var(--text-2)] uppercase tracking-[0.14em] font-semibold">
+                      Recordes pessoais
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-3.5">
+                      {Object.entries(personalRecords).map(([exId, kg]) => {
+                        const name = evolution[exId]?.name
+                          ?? squad.weeklyPlan.flatMap(d => d.exercises).find(e => e.id === exId)?.name;
+                        if (!name) return null;
+                        return (
+                          <span key={exId}
+                            className="rounded-full bg-[var(--accent-soft)] text-[var(--accent)] px-3 py-2 text-[11.5px] font-semibold">
+                            {name} · {kg} kg
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
                   <StatCard
                     title="Total de Exercícios"
                     value={loading ? '—' : String(totalDone)}
                     subtitle="Esta semana"
-                    icon={<Dumbbell className="text-emerald-500" />}
+                    icon={<Dumbbell className="text-[var(--accent)]" />}
                   />
                   <StatCard
                     title="Dias Concluídos"
                     value={loading ? '—' : `${daysCompleted}/7`}
                     subtitle="Meta semanal"
-                    icon={<CheckCircle2 className="text-blue-500" />}
+                    icon={<CheckCircle2 className="text-[var(--accent)]" />}
                   />
                   <StatCard
                     title="Consistência"
@@ -1335,10 +1833,10 @@ useEffect(() => {
                   />
                 </div>
 
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-4 md:p-8">
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 md:p-8">
                   <h3 className="text-base md:text-xl font-bold mb-4 md:mb-6">Histórico de Atividade</h3>
                   {loading ? (
-                    <div className="h-44 md:h-64 flex items-center justify-center text-sm text-[#616161]">Carregando...</div>
+                    <div className="h-44 md:h-64 flex items-center justify-center text-sm text-[var(--text-2)]">Carregando...</div>
                   ) : (
                     <div className="h-44 md:h-64 flex items-end justify-between gap-1.5 md:gap-2">
                       {weekDates.map((dateKey, i) => {
@@ -1347,19 +1845,19 @@ useEffect(() => {
                         const isToday = dateKey === localDateStr(todayD);
                         return (
                           <div key={dateKey} className="flex-1 flex flex-col items-center gap-3">
-                            <div className="w-full bg-[#1a1a1a] rounded-t-lg relative group" style={{ height: '100%' }}>
+                            <div className="w-full bg-[var(--surface-3)] rounded-t-lg relative group" style={{ height: '100%' }}>
                               <motion.div
                                 initial={{ height: 0 }}
                                 animate={{ height: pct > 0 ? `${pct}%` : completed === 0 ? '2px' : `${pct}%` }}
-                                className={`w-full rounded-t-lg transition-all group-hover:opacity-80 ${isToday ? 'bg-emerald-500/30 border-t-2 border-emerald-400' : 'bg-emerald-500/15 border-t-2 border-emerald-600'}`}
+                                className={`w-full rounded-t-lg transition-all group-hover:opacity-80 ${isToday ? 'bg-[var(--accent-line)] border-t-2 border-[var(--accent)]' : 'bg-[var(--accent-soft)] border-t-2 border-[var(--btn-bg)]'}`}
                               />
                               {completed > 0 && (
-                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[#1a1a1a] text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[var(--surface-3)] text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
                                   {completed} ex
                                 </div>
                               )}
                             </div>
-                            <span className={`text-xs font-medium ${isToday ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                            <span className={`text-xs font-medium ${isToday ? 'text-[var(--accent)]' : 'text-[var(--text-2)]'}`}>
                               {dayLabels[i]}
                             </span>
                           </div>
@@ -1370,11 +1868,11 @@ useEffect(() => {
                 </div>
 
                 {/* Breakdown por dia */}
-                <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl overflow-hidden">
-                  <div className="px-5 py-4 border-b border-[#1F1F1F]">
-                    <p className="text-xs text-[#616161] uppercase tracking-widest font-medium">Dias desta semana</p>
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-[var(--border)]">
+                    <p className="text-xs text-[var(--text-2)] uppercase tracking-widest font-medium">Dias desta semana</p>
                   </div>
-                  <div className="divide-y divide-[#1a1a1a]">
+                  <div className="divide-y divide-[var(--surface-3)]">
                     {weekDates.map((dateKey, i) => {
                       const day = squad.weeklyPlan[i];
                       const completed = thisWeekByDate[dateKey] ?? 0;
@@ -1383,19 +1881,19 @@ useEffect(() => {
                       const isDone    = planned > 0 && completed >= planned;
                       const dayName   = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'][i];
                       return (
-                        <div key={dateKey} className={`px-5 py-3.5 flex items-center gap-4 ${isToday ? 'bg-[#161616]' : ''}`}>
+                        <div key={dateKey} className={`px-5 py-3.5 flex items-center gap-4 ${isToday ? 'bg-[var(--surface-2)]' : ''}`}>
                           <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
-                            isDone ? 'bg-emerald-500' : completed > 0 ? 'bg-emerald-500/30' : 'bg-[#1a1a1a]'
+                            isDone ? 'bg-[var(--accent)]' : completed > 0 ? 'bg-[var(--accent-line)]' : 'bg-[var(--surface-3)]'
                           }`}>
-                            {isDone && <CheckCircle2 size={12} className="text-white" />}
+                            {isDone && <CheckCircle2 size={12} className="text-[var(--btn-fg)]" />}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className={`text-sm font-medium ${isToday ? 'text-[#E8E8E8]' : 'text-[#616161]'}`}>
-                              {dayName} {isToday && <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded ml-1">Hoje</span>}
+                            <p className={`text-sm font-medium ${isToday ? 'text-[var(--text)]' : 'text-[var(--text-2)]'}`}>
+                              {dayName} {isToday && <span className="text-[10px] bg-[var(--accent-soft)] text-[var(--accent)] px-1.5 py-0.5 rounded ml-1">Hoje</span>}
                             </p>
-                            {day?.focus && <p className="text-xs text-[#3a3a3a] mt-0.5">{day.focus}</p>}
+                            {day?.focus && <p className="text-xs text-[var(--text-3)] mt-0.5">{day.focus}</p>}
                           </div>
-                          <span className="text-xs text-[#616161] tabular-nums shrink-0">
+                          <span className="text-xs text-[var(--text-2)] tabular-nums shrink-0">
                             {planned > 0 ? `${completed}/${planned}` : '—'}
                           </span>
                         </div>
@@ -1422,39 +1920,67 @@ useEffect(() => {
           })()}
 
           {currentView === 'settings' && (
-            <Settings
-              session={session}
-              squad={squad}
-              isPersonal={isPersonal}
-              onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
-              onLeaveSquad={refreshSquad}
-              onSquadJoined={refreshSquad}
-              onProfileUpdate={(name, avatarUrl) => setSquad(prev => ({
-                ...prev,
-                members: prev.members.map(m =>
-                  m.id === session.user.id
-                    ? { ...m, name: name || m.name, avatar: avatarUrl || m.avatar }
-                    : m
-                ),
-              }))}
-            />
+            <Suspense fallback={<ViewLoading />}>
+              <Settings
+                session={session}
+                squad={squad}
+                isPersonal={isPersonal}
+                theme={theme}
+                onToggleTheme={toggleTheme}
+                onSquadUpdate={(name, icon) => setSquad(prev => ({ ...prev, name, icon }))}
+                onLeaveSquad={refreshSquad}
+                onSquadJoined={refreshSquad}
+                onProfileUpdate={(name, avatarUrl) => setSquad(prev => ({
+                  ...prev,
+                  members: prev.members.map(m =>
+                    m.id === session.user.id
+                      ? { ...m, name: name || m.name, avatar: avatarUrl || m.avatar }
+                      : m
+                  ),
+                }))}
+              />
+            </Suspense>
           )}
 
-          {currentView === 'dieta' && <Dieta session={session} />}
+          {currentView === 'dieta' && (
+            <Suspense fallback={<ViewLoading />}>
+              <Dieta session={session} tab={dietaTab} onTabChange={setDietaTab} />
+            </Suspense>
+          )}
 
           {currentView === 'ia' && (
-            <AIChat
-              squad={squad}
-              streak={diasTreinados}
-              progressStats={progressStats}
-              onCreateWorkout={applyAIWorkout}
-            />
+            <Suspense fallback={<ViewLoading />}>
+              <AIChat
+                squad={squad}
+                streak={diasTreinados}
+                progressStats={progressStats}
+                onCreateWorkout={applyAIWorkout}
+              />
+            </Suspense>
           )}
         </div>
       </main>
 
+      {/* Aviso flutuante (erro/sucesso) */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl shadow-2xl text-sm font-semibold border ${
+              toast.kind === 'ok'
+                ? 'bg-[var(--accent-soft)] border-[var(--accent-line)] text-[var(--accent)]'
+                : 'bg-[var(--danger-soft)] border-[var(--danger)] text-red-300'
+            }`}
+          >
+            {toast.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Bottom Nav — mobile */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#0A0A0A]/95 backdrop-blur-md border-t border-[#1F1F1F] flex items-center justify-around px-2"
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-[var(--bg)]/95 backdrop-blur-md border-t border-[var(--border)] flex items-center justify-around px-2"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: 8 }}>
         <MobileNavItem icon={<Dumbbell size={21} />}     label="Treino" active={currentView === 'treino'}   onClick={() => setCurrentView('treino')} />
         <MobileNavItem icon={<Apple size={21} />}        label="Dieta"  active={currentView === 'dieta'}    onClick={() => setCurrentView('dieta')} />
@@ -1470,73 +1996,73 @@ useEffect(() => {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl"
+              className="bg-[var(--surface)] border border-[var(--border)] w-full max-w-md rounded-3xl overflow-hidden shadow-2xl"
             >
-              <div className="p-6 border-b border-zinc-800 flex justify-between items-center">
+              <div className="p-6 border-b border-[var(--border)] flex justify-between items-center">
                 <h3 className="text-xl font-bold">Editar Exercício</h3>
-                <button onClick={() => setIsEditorOpen(false)} className="text-zinc-500 hover:text-white transition-colors">
+                <button onClick={() => setIsEditorOpen(false)} className="text-[var(--text-2)] hover:text-[var(--text)] transition-colors">
                   <Plus className="rotate-45" />
                 </button>
               </div>
               <div className="p-6 space-y-4">
                 <div>
-                  <label className="text-xs font-bold text-zinc-500 uppercase mb-1 block">Nome do Exercício</label>
+                  <label className="text-xs font-bold text-[var(--text-2)] uppercase mb-1 block">Nome do Exercício</label>
                   <input 
                     type="text" 
                     value={editingExercise.exercise.name}
                     onChange={(e) => setEditingExercise({ ...editingExercise, exercise: { ...editingExercise.exercise, name: e.target.value } })}
-                    className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                    className="w-full bg-[var(--surface-3)] border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--accent)] outline-none"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs font-bold text-zinc-500 uppercase mb-1 block">Séries</label>
+                    <label className="text-xs font-bold text-[var(--text-2)] uppercase mb-1 block">Séries</label>
                     <input 
                       type="number" 
                       value={editingExercise.exercise.sets}
                       onChange={(e) => setEditingExercise({ ...editingExercise, exercise: { ...editingExercise.exercise, sets: parseInt(e.target.value) } })}
-                      className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      className="w-full bg-[var(--surface-3)] border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--accent)] outline-none"
                     />
                   </div>
                   <div>
-                    <label className="text-xs font-bold text-zinc-500 uppercase mb-1 block">Reps</label>
+                    <label className="text-xs font-bold text-[var(--text-2)] uppercase mb-1 block">Reps</label>
                     <input 
                       type="text" 
                       value={editingExercise.exercise.reps}
                       onChange={(e) => setEditingExercise({ ...editingExercise, exercise: { ...editingExercise.exercise, reps: e.target.value } })}
-                      className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      className="w-full bg-[var(--surface-3)] border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--accent)] outline-none"
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-zinc-500 uppercase mb-1 block">Descanso</label>
+                  <label className="text-xs font-bold text-[var(--text-2)] uppercase mb-1 block">Descanso</label>
                   <input 
                     type="text" 
                     value={editingExercise.exercise.rest}
                     onChange={(e) => setEditingExercise({ ...editingExercise, exercise: { ...editingExercise.exercise, rest: e.target.value } })}
-                    className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                    className="w-full bg-[var(--surface-3)] border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--accent)] outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-zinc-500 uppercase mb-1 block">Observações</label>
+                  <label className="text-xs font-bold text-[var(--text-2)] uppercase mb-1 block">Observações</label>
                   <textarea 
                     value={editingExercise.exercise.notes || ''}
                     onChange={(e) => setEditingExercise({ ...editingExercise, exercise: { ...editingExercise.exercise, notes: e.target.value } })}
-                    className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none h-24 resize-none"
+                    className="w-full bg-[var(--surface-3)] border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--accent)] outline-none h-24 resize-none"
                     placeholder="Ex: Focar na cadência..."
                   />
                 </div>
               </div>
-              <div className="p-6 bg-zinc-800/50 flex gap-3">
+              <div className="p-6 bg-[var(--surface-3)] flex gap-3">
                 <button 
                   onClick={() => setIsEditorOpen(false)}
-                  className="flex-1 px-4 py-3 rounded-xl text-sm font-bold text-zinc-400 hover:text-white transition-all"
+                  className="flex-1 px-4 py-3 rounded-xl text-sm font-bold text-[var(--text-2)] hover:text-[var(--text)] transition-all"
                 >
                   Cancelar
                 </button>
                 <button 
                   onClick={() => saveExercise(editingExercise.exercise)}
-                  className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-sm font-bold transition-all"
+                  className="flex-1 bg-[var(--accent)] hover:bg-[var(--btn-bg-hover)] text-[var(--btn-fg)] px-4 py-3 rounded-xl text-sm font-bold transition-all"
                 >
                   Salvar
                 </button>
@@ -1548,54 +2074,67 @@ useEffect(() => {
 
       {/* Rest Timer Overlay */}
       <AnimatePresence>
-        {restTimer && (
-          <motion.div
-            initial={{ y: 80, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 80, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-            className="fixed bottom-24 md:bottom-8 left-1/2 -translate-x-1/2 z-50"
-          >
-            <div className="bg-[#111111] border border-[#1F1F1F] rounded-2xl px-5 py-3.5 flex items-center gap-4 shadow-2xl min-w-[220px]">
-              <div className="flex-1">
-                <p className="text-[10px] text-[#616161] uppercase tracking-widest font-medium mb-0.5">Descanso</p>
-                <div className="flex items-baseline gap-1.5">
-                  <span className={`text-2xl font-bold tabular-nums ${restTimer.remaining <= 5 ? 'text-rose-400' : 'text-emerald-400'}`}>
+        {restTimer && (() => {
+          // Anel de contagem regressiva (perímetro = 2·pi·23 ≈ 145)
+          const C = 145;
+          const offset = C * (1 - restTimer.remaining / restTimer.total);
+          const low = restTimer.remaining <= 5;
+          const color = low ? 'var(--danger)' : 'var(--accent)';
+          return (
+            <motion.div
+              initial={{ y: 16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 16, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="fixed bottom-24 md:bottom-8 left-4 right-4 md:left-1/2 md:right-auto md:-translate-x-1/2 md:w-[380px] z-50"
+            >
+              <div className="flex items-center gap-4 rounded-2xl border border-[var(--border-strong)] px-[18px] py-3.5 shadow-2xl backdrop-blur-xl"
+                style={{ background: 'rgba(22,22,22,0.96)' }}>
+
+                <div className="relative w-[52px] h-[52px] flex-none">
+                  <svg viewBox="0 0 52 52" className="w-[52px] h-[52px] -rotate-90">
+                    <circle cx="26" cy="26" r="23" fill="none" stroke="var(--border)" strokeWidth="3.5" />
+                    <circle cx="26" cy="26" r="23" fill="none" stroke={color} strokeWidth="3.5"
+                      strokeLinecap="round" strokeDasharray={C} strokeDashoffset={offset}
+                      style={{ transition: 'stroke-dashoffset 900ms linear, stroke 200ms' }} />
+                  </svg>
+                  <span className="absolute inset-0 flex items-center justify-center text-[12.5px] font-bold tabular-nums">
                     {String(Math.floor(restTimer.remaining / 60)).padStart(2, '0')}:{String(restTimer.remaining % 60).padStart(2, '0')}
                   </span>
-                  <span className="text-xs text-[#3a3a3a]">/ {String(Math.floor(restTimer.total / 60)).padStart(2, '0')}:{String(restTimer.total % 60).padStart(2, '0')}</span>
                 </div>
-                <div className="w-full bg-[#1a1a1a] h-1 rounded-full mt-2 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${restTimer.remaining <= 5 ? 'bg-rose-400' : 'bg-emerald-400'}`}
-                    style={{ width: `${(restTimer.remaining / restTimer.total) * 100}%` }}
-                  />
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-[7px] text-[13.5px] font-semibold">
+                    <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: color }} />
+                    Descanso
+                  </div>
+                  <p className="text-[11.5px] text-[var(--text-2)] mt-1">Próxima série em seguida</p>
                 </div>
+
+                <button
+                  onClick={() => setRestTimer(null)}
+                  className="flex-none bg-[var(--bg)] border border-[var(--border-strong)] rounded-lg px-3.5 py-2.5 text-xs font-semibold text-[var(--text)] hover:border-[var(--text-3)] transition-colors"
+                >
+                  Pular
+                </button>
               </div>
-              <button
-                onClick={() => setRestTimer(null)}
-                className="px-3 py-2 text-xs text-[#616161] hover:text-[#E8E8E8] bg-[#1a1a1a] hover:bg-[#222] rounded-lg transition-all font-medium"
-              >
-                Pular
-              </button>
-            </div>
-          </motion.div>
-        )}
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );
 }
 
-function MobileNavItem({ icon, label, active, onClick }: { icon: ReactNode, label: string, active?: boolean, onClick: () => void }) {
+function MobileNavItem({ label, active, onClick }: { icon?: ReactNode, label: string, active?: boolean, onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className="flex flex-col items-center gap-1 px-3 py-1 transition-all relative"
-      style={{ color: active ? '#10b981' : '#505050', minWidth: 56 }}>
-      {active && (
-        <span className="absolute -top-2 left-1/2 -translate-x-1/2 w-5 h-0.5 rounded-full bg-emerald-500" />
-      )}
-      {icon}
-      <span className="text-[10px] font-medium">{label}</span>
+      className="flex-1 py-2 text-[12.5px] transition-colors"
+      style={{
+        color: active ? 'var(--text)' : 'var(--text-2)',
+        fontWeight: active ? 600 : 500,
+      }}>
+      {label}
     </button>
   );
 }
@@ -1604,8 +2143,8 @@ function NavItem({ icon, label, active, onClick }: { icon: ReactNode, label: str
   return (
     <button onClick={onClick}
       className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all
-        ${active ? 'bg-[#1a1a1a] text-[#E8E8E8]' : 'text-[#616161] hover:text-[#E8E8E8] hover:bg-[#141414]'}`}>
-      <span className={active ? 'text-emerald-400' : ''}>{icon}</span>
+        ${active ? 'bg-[var(--surface-3)] text-[var(--text)]' : 'text-[var(--text-2)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]'}`}>
+      <span className={active ? 'text-[var(--accent)]' : ''}>{icon}</span>
       <span className="text-sm">{label}</span>
     </button>
   );
@@ -1619,7 +2158,7 @@ function formatRestDisplay(rest: string): string {
 }
 
 function ExerciseItem({
-  exercise, setsDone, loadData, onSetToggle, onLoadChange, isPR = false, onEdit, showEdit = true,
+  exercise, setsDone, loadData, onSetToggle, onLoadChange, isPR = false, previous, onEdit, showEdit = true,
 }: {
   exercise: Exercise;
   setsDone: boolean[];
@@ -1627,82 +2166,73 @@ function ExerciseItem({
   onSetToggle: (setIndex: number) => void;
   onLoadChange: (setIndex: number, field: 'weight' | 'reps', val: string) => void;
   isPR?: boolean;
+  /** Resumo da última vez que este exercício foi feito (ex: "4×10 · 75 kg") */
+  previous?: string;
   onEdit?: () => void;
   showEdit?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const doneCount = setsDone.filter(Boolean).length;
   const allDone = doneCount === exercise.sets;
-  const displayWeight = loadData.find(l => l.weight)?.weight;
+
+  // Barra de acento à esquerda: verde quando concluído, violeta quando aberto
+  const accent = allDone ? 'var(--accent)' : expanded ? 'var(--accent)' : 'transparent';
 
   return (
     <motion.div layout
-      className={`rounded-xl border overflow-hidden transition-all ${allDone ? 'border-[#1a1a1a] opacity-50' : isPR ? 'border-amber-500/40' : 'border-[#252525]'}`}
-      style={{ background: '#141414' }}>
+      className="relative overflow-hidden rounded-xl border transition-colors"
+      style={{
+        background: expanded ? 'var(--surface-2)' : 'var(--surface)',
+        borderColor: expanded ? 'var(--border-strong)' : 'var(--border)',
+      }}>
+      <span className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors"
+        style={{ background: accent }} />
 
-      {/* Compact row */}
-      <div className="flex items-center gap-3 px-3 py-3">
+      {/* Linha principal */}
+      <div className="flex items-center gap-3.5 px-[18px] py-4">
+        {/* Marcar exercício inteiro */}
+        <button
+          onClick={() => {
+            // Marca ou desmarca todas as séries de uma vez
+            for (let i = 0; i < exercise.sets; i++) {
+              if ((setsDone[i] ?? false) === allDone) onSetToggle(i);
+            }
+          }}
+          aria-label={allDone ? 'desmarcar exercício' : 'concluir exercício'}
+          className="flex-none w-[26px] h-[26px] rounded-full border-[1.5px] flex items-center justify-center transition-all active:scale-90"
+          style={{
+            borderColor: allDone ? 'var(--accent)' : 'var(--border-strong)',
+            background: allDone ? 'var(--accent)' : 'transparent',
+          }}>
+          {allDone && <CheckCircle2 size={13} className="text-[var(--bg)]" />}
+        </button>
 
-        {/* Icon square */}
-        <div className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 transition-all
-          ${isPR ? 'bg-amber-500/10 border-amber-500/30' : 'bg-[#1c1c1c] border-[#282828]'}`}>
-          {isPR
-            ? <span className="text-sm">🏆</span>
-            : <Dumbbell size={13} className={allDone ? 'text-[#2a2a2a]' : 'text-[#505050]'} />
-          }
-        </div>
-
-        {/* Name + meta — tap to expand inputs */}
         <button className="flex-1 min-w-0 text-left" onClick={() => setExpanded(v => !v)}>
-          <div className="flex items-center gap-2">
-            <p className={`text-sm font-semibold leading-tight ${allDone ? 'text-[#2a2a2a] line-through' : 'text-[#E0E0E0]'}`}>
-              {exercise.name}
-            </p>
-            {isPR && (
-              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 shrink-0">
-                PR
-              </span>
-            )}
-          </div>
-          <p className="text-[10px] font-medium tracking-wider mt-0.5 flex flex-wrap gap-x-1.5">
-            <span className="text-[#404040]">{exercise.sets} SÉRIES</span>
-            <span className="text-[#282828]">·</span>
-            <span className="text-[#404040]">{exercise.reps} REPS</span>
-            {displayWeight && (
-              <>
-                <span className="text-[#282828]">·</span>
-                <span style={{ color: '#c2410c' }}>{displayWeight} KG</span>
-              </>
-            )}
-            <span className="text-[#282828]">·</span>
-            <span className="text-[#404040]">DESCANSO {formatRestDisplay(exercise.rest)}</span>
+          <p className={`text-[15.5px] font-semibold leading-tight ${allDone ? 'text-[var(--text-2)] line-through' : 'text-[var(--text)]'}`}>
+            {exercise.name}
+          </p>
+          <p className="text-[12.5px] text-[var(--text-2)] mt-[5px]">
+            {exercise.sets} séries · {exercise.reps} reps · {formatRestDisplay(exercise.rest)} descanso
           </p>
         </button>
 
+        {isPR && (
+          <span className="flex-none rounded-full px-[9px] py-[5px] text-[9.5px] font-bold tracking-[0.06em] bg-[var(--accent-soft)] text-[var(--accent)]">
+            🏆 RECORDE
+          </span>
+        )}
+
         {showEdit && onEdit && (
           <button onClick={e => { e.stopPropagation(); onEdit(); }}
-            className="text-[#282828] hover:text-[#505050] transition-colors shrink-0 mr-1">
+            className="text-[var(--text-3)] hover:text-[var(--text-2)] transition-colors shrink-0">
             <Edit3 size={12} />
           </button>
         )}
 
-        {/* Set squares */}
-        <div className="flex gap-1 shrink-0">
-          {Array.from({ length: exercise.sets }, (_, i) => {
-            const done = setsDone[i] ?? false;
-            return (
-              <button key={i}
-                onClick={() => onSetToggle(i)}
-                className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-all active:scale-90
-                  ${done ? 'bg-emerald-500 border-emerald-500' : 'bg-transparent border-[#2e2e2e] hover:border-[#484848]'}`}>
-                {done && <CheckCircle2 size={11} className="text-[#0A0A0A]" />}
-              </button>
-            );
-          })}
-        </div>
+        <span className="flex-none text-[11px] text-[var(--text-3)]">{expanded ? '▲' : '▼'}</span>
       </div>
 
-      {/* Expandable per-set inputs */}
+      {/* Séries: peso, reps e marcação */}
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -1710,35 +2240,51 @@ function ExerciseItem({
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.18 }}
-            className="overflow-hidden border-t border-[#1e1e1e]">
-            <div className="px-3 py-2.5 space-y-1.5">
+            className="overflow-hidden">
+            <div className="mx-[18px] mb-4 pt-3.5 border-t border-[var(--border)] flex flex-col gap-2">
+              <div className="grid grid-cols-[22px_1fr_1fr_34px] gap-2.5 text-[9.5px] font-semibold tracking-[0.12em] text-[var(--text-3)]">
+                <span>#</span><span>PESO (KG)</span><span>REPS</span><span />
+              </div>
+
               {Array.from({ length: exercise.sets }, (_, i) => {
                 const done = setsDone[i] ?? false;
                 const load = loadData[i] ?? { weight: '', reps: '' };
                 return (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className={`text-[10px] w-12 shrink-0 ${done ? 'text-[#252525]' : 'text-[#505050]'}`}>
-                      Série {i + 1}
-                    </span>
+                  <div key={i} className="grid grid-cols-[22px_1fr_1fr_34px] gap-2.5 items-center">
+                    <span className="text-xs font-semibold text-[var(--text-2)]">{i + 1}</span>
                     <input
                       type="number" inputMode="decimal" placeholder="—"
                       value={load.weight}
                       onChange={e => onLoadChange(i, 'weight', e.target.value)}
                       onClick={e => e.stopPropagation()}
-                      className={`flex-1 h-7 bg-[#1a1a1a] border border-[#252525] rounded-lg text-center text-xs tabular-nums outline-none focus:border-[#383838] transition-colors min-w-0 ${done ? 'text-[#2a2a2a]' : 'text-[#C0C0C0]'}`}
+                      className={`w-full bg-[var(--bg)] border rounded-lg px-2.5 py-[9px] text-[13px] font-semibold tabular-nums outline-none transition-colors ${
+                        done ? 'border-[var(--accent-line)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text)] focus:border-[var(--border-strong)]'
+                      }`}
                     />
-                    <span className="text-[9px] text-[#282828] shrink-0">kg ×</span>
                     <input
                       type="number" inputMode="numeric" placeholder={exercise.reps}
                       value={load.reps}
                       onChange={e => onLoadChange(i, 'reps', e.target.value)}
                       onClick={e => e.stopPropagation()}
-                      className={`w-12 h-7 bg-[#1a1a1a] border border-[#252525] rounded-lg text-center text-xs tabular-nums outline-none focus:border-[#383838] transition-colors shrink-0 ${done ? 'text-[#2a2a2a]' : 'text-[#C0C0C0]'}`}
+                      className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2.5 py-[9px] text-[13px] font-semibold tabular-nums text-[var(--text)] outline-none focus:border-[var(--border-strong)] transition-colors"
                     />
-                    <span className="text-[9px] text-[#282828] shrink-0">reps</span>
+                    <button
+                      onClick={() => onSetToggle(i)}
+                      aria-label="série feita"
+                      className="w-[30px] h-[30px] rounded-lg border-[1.5px] flex items-center justify-center transition-all active:scale-90"
+                      style={{
+                        borderColor: done ? 'var(--accent)' : 'var(--border-strong)',
+                        background: done ? 'var(--accent)' : 'transparent',
+                      }}>
+                      {done && <CheckCircle2 size={12} className="text-[var(--bg)]" />}
+                    </button>
                   </div>
                 );
               })}
+
+              {previous && (
+                <p className="text-[11.5px] text-[var(--text-3)] mt-0.5">Anterior: {previous}</p>
+              )}
             </div>
           </motion.div>
         )}
@@ -1800,12 +2346,12 @@ function LoadTracker({
       {/* Cabeçalho da seção */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-base font-semibold text-[#E8E8E8]">Evolução de Cargas</h3>
-          <p className="text-xs text-[#616161] mt-0.5">Registre sua carga a cada sessão</p>
+          <h3 className="text-base font-semibold text-[var(--text)]">Evolução de Cargas</h3>
+          <p className="text-xs text-[var(--text-2)] mt-0.5">Registre sua carga a cada sessão</p>
         </div>
         <button
           onClick={() => setAdding(true)}
-          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 rounded-lg text-xs text-white font-medium transition-all shrink-0"
+          className="flex items-center gap-1.5 px-3 py-2 bg-[var(--accent)] hover:bg-[var(--btn-bg-hover)] rounded-lg text-xs text-[var(--btn-fg)] font-medium transition-all shrink-0"
         >
           <Plus size={13} /> Novo exercício
         </button>
@@ -1813,35 +2359,35 @@ function LoadTracker({
 
       {/* Form criar */}
       {adding && (
-        <div className="bg-[#111111] border border-emerald-500/30 rounded-xl p-4 mb-4 flex gap-2 items-center">
+        <div className="bg-[var(--surface)] border border-[var(--accent-line)] rounded-xl p-4 mb-4 flex gap-2 items-center">
           <input
             autoFocus
             value={newName}
             onChange={e => setNewName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setNewName(''); setAdding(false); } }}
             placeholder="Nome do exercício — ex: Supino"
-            className="flex-1 bg-[#0A0A0A] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-[#E8E8E8] placeholder-[#3a3a3a] outline-none focus:border-emerald-500/50 transition-colors"
+            className="flex-1 bg-[var(--bg)] border border-[var(--border-strong)] rounded-lg px-3 py-2.5 text-sm text-[var(--text)] placeholder-[var(--text-3)] outline-none focus:border-[var(--accent-line)] transition-colors"
           />
           <button onClick={commit} disabled={creating}
-            className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 rounded-lg text-xs text-white font-semibold min-w-[64px] transition-all">
+            className="px-4 py-2.5 bg-[var(--accent)] hover:bg-[var(--btn-bg-hover)] disabled:opacity-60 rounded-lg text-xs text-[var(--btn-fg)] font-semibold min-w-[64px] transition-all">
             {creating ? '...' : 'Criar'}
           </button>
           <button onClick={() => { setNewName(''); setAdding(false); }}
-            className="px-3 py-2.5 bg-transparent border border-[#1F1F1F] rounded-lg text-xs text-[#616161] hover:text-[#E8E8E8] transition-colors">
+            className="px-3 py-2.5 bg-transparent border border-[var(--border)] rounded-lg text-xs text-[var(--text-2)] hover:text-[var(--text)] transition-colors">
             Cancelar
           </button>
         </div>
       )}
 
       {loading && (
-        <div className="py-10 text-sm text-[#616161] text-center">Carregando...</div>
+        <div className="py-10 text-sm text-[var(--text-2)] text-center">Carregando...</div>
       )}
 
       {!loading && trackedExercises.length === 0 && !adding && (
-        <div className="bg-[#111111] border border-[#1F1F1F] rounded-xl py-12 flex flex-col items-center gap-3 text-[#3a3a3a]">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl py-12 flex flex-col items-center gap-3 text-[var(--text-3)]">
           <Dumbbell size={32} />
-          <p className="text-sm text-[#616161]">Nenhum exercício cadastrado.</p>
-          <button onClick={() => setAdding(true)} className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">
+          <p className="text-sm text-[var(--text-2)]">Nenhum exercício cadastrado.</p>
+          <button onClick={() => setAdding(true)} className="text-xs text-[var(--accent)] hover:text-[var(--accent)] transition-colors">
             + Adicionar primeiro exercício
           </button>
         </div>
@@ -1857,28 +2403,28 @@ function LoadTracker({
           const latest   = history[0];
 
           return (
-            <div key={ex.id} className="bg-[#111111] border border-[#1F1F1F] rounded-xl p-5 flex flex-col gap-4 hover:border-[#2a2a2a] transition-colors">
+            <div key={ex.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5 flex flex-col gap-4 hover:border-[var(--border-strong)] transition-colors">
 
               {/* Cabeçalho do card */}
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
-                  <p className="text-base font-bold text-[#E8E8E8] capitalize leading-tight">{ex.name}</p>
+                  <p className="font-display text-base font-bold text-[var(--text)] capitalize leading-tight">{ex.name}</p>
                   {latest && (
-                    <p className="text-xs text-[#616161] mt-0.5">
-                      Último: <span className="text-emerald-400 font-medium">{latest.load_notes}</span>
-                      <span className="text-[#3a3a3a]"> · {formatDate(latest.date)}</span>
+                    <p className="text-xs text-[var(--text-2)] mt-0.5">
+                      Último: <span className="text-[var(--accent)] font-medium">{latest.load_notes}</span>
+                      <span className="text-[var(--text-3)]"> · {formatDate(latest.date)}</span>
                     </p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {t && (
-                    <span className={`text-sm font-bold leading-none ${t === '↑' ? 'text-emerald-400' : t === '↓' ? 'text-red-400' : 'text-[#616161]'}`}>
+                    <span className={`text-sm font-bold leading-none ${t === '↑' ? 'text-[var(--accent)]' : t === '↓' ? 'text-[var(--danger)]' : 'text-[var(--text-2)]'}`}>
                       {t}
                     </span>
                   )}
                   <button
                     onClick={() => { if (confirm(`Excluir "${ex.name}" e todo o histórico?`)) onDelete(ex.id); }}
-                    className="text-[#2a2a2a] hover:text-red-400 transition-colors p-1"
+                    className="text-[var(--border-strong)] hover:text-red-400 transition-colors p-1"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -1892,15 +2438,15 @@ function LoadTracker({
                   onChange={e => onSetInput(ex.id, e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') onSave(ex.id, inputVal); }}
                   placeholder="Ex: 14kg · 3×10"
-                  className="flex-1 bg-[#0A0A0A] border border-[#1F1F1F] focus:border-emerald-500/40 rounded-lg px-3 py-2 text-sm text-[#E8E8E8] placeholder-[#2a2a2a] outline-none transition-colors"
+                  className="flex-1 bg-[var(--bg)] border border-[var(--border)] focus:border-[var(--accent-line)] rounded-lg px-3 py-2 text-sm text-[var(--text)] placeholder-[var(--border-strong)] outline-none transition-colors"
                 />
                 <button
                   onClick={() => onSave(ex.id, inputVal)}
                   disabled={!inputVal.trim()}
                   className={`px-3 py-2 rounded-lg text-xs font-semibold shrink-0 transition-all disabled:opacity-30 ${
                     isSaved
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-[#1a1a1a] text-[#9a9a9a] border border-[#2a2a2a] hover:text-white hover:bg-[#222] hover:border-[#3a3a3a]'
+                      ? 'bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-line)]'
+                      : 'bg-[var(--surface-3)] text-[var(--text-2)] border border-[var(--border-strong)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] hover:border-[var(--text-3)]'
                   }`}
                 >
                   {isSaved ? '✓' : 'Salvar'}
@@ -1910,7 +2456,7 @@ function LoadTracker({
               {/* Histórico em chips */}
               {history.length > 0 && (
                 <div>
-                  <p className="text-[10px] text-[#3a3a3a] uppercase tracking-widest mb-2">Histórico</p>
+                  <p className="text-[10px] text-[var(--text-3)] uppercase tracking-widest mb-2">Histórico</p>
                   <div className="flex flex-col gap-1.5">
                     {history.slice(0, 5).map((entry, idx) => {
                       const prevEntry  = history[idx + 1];
@@ -1920,18 +2466,18 @@ function LoadTracker({
 
                       return (
                         <div key={entry.id} className="flex items-center gap-3 group">
-                          <span className="text-[11px] text-[#3a3a3a] w-9 shrink-0 tabular-nums">{formatDate(entry.date)}</span>
-                          <span className={`text-sm flex-1 ${idx === 0 ? 'text-[#E8E8E8] font-semibold' : 'text-[#616161]'}`}>
+                          <span className="text-[11px] text-[var(--text-3)] w-9 shrink-0 tabular-nums">{formatDate(entry.date)}</span>
+                          <span className={`text-sm flex-1 ${idx === 0 ? 'text-[var(--text)] font-semibold' : 'text-[var(--text-2)]'}`}>
                             {entry.load_notes}
                           </span>
                           {hasDiff && (
-                            <span className={`text-[11px] font-medium shrink-0 ${curr > prev ? 'text-emerald-400' : 'text-red-400'}`}>
+                            <span className={`text-[11px] font-medium shrink-0 ${curr > prev ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>
                               {curr > prev ? '+' : ''}{(curr - prev).toFixed(1)}kg
                             </span>
                           )}
                           <button
                             onClick={() => onDeleteEntry(ex.id, entry.id)}
-                            className="opacity-0 group-hover:opacity-100 text-[#2a2a2a] hover:text-red-400 transition-all shrink-0"
+                            className="opacity-0 group-hover:opacity-100 text-[var(--border-strong)] hover:text-red-400 transition-all shrink-0"
                           >
                             <Trash2 size={10} />
                           </button>
@@ -1951,13 +2497,13 @@ function LoadTracker({
 
 function StatCard({ title, value, subtitle, icon }: { title: string, value: string, subtitle: string, icon: ReactNode }) {
   return (
-    <div className="bg-[#111111] border border-[#1F1F1F] p-4 md:p-5 rounded-xl">
-      <div className="flex items-center gap-2 mb-3 md:mb-4 text-[#616161]">
+    <div className="bg-[var(--surface)] border border-[var(--border)] p-4 md:p-5 rounded-xl">
+      <div className="flex items-center gap-2 mb-3 md:mb-4 text-[var(--text-2)]">
         {icon}
         <p className="text-[10px] md:text-xs font-medium uppercase tracking-widest truncate">{title}</p>
       </div>
-      <h4 className="text-2xl md:text-3xl font-bold text-[#E8E8E8] mb-1 tabular-nums">{value}</h4>
-      <p className="text-[10px] md:text-xs text-[#616161] leading-tight">{subtitle}</p>
+      <h4 className="text-2xl md:text-3xl font-bold text-[var(--text)] mb-1 tabular-nums">{value}</h4>
+      <p className="text-[10px] md:text-xs text-[var(--text-2)] leading-tight">{subtitle}</p>
     </div>
   );
 }

@@ -1,8 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { Squad } from '../types';
-import { supabase } from './supabase';
-
-const MODEL = 'claude-haiku-4-5-20251001';
+import { streamWorkoutChat } from './anthropicProxy';
 
 const SYSTEM_PROMPT = `Você é o Kronos AI, assistente pessoal de treino e dieta integrado ao app Kronos.
 Seja direto, motivador e técnico. Responda sempre em português brasileiro.
@@ -12,53 +9,6 @@ REGRAS IMPORTANTES:
 - Quando o usuário pedir DIETA, alimentação ou macros: forneça o plano alimentar. NÃO adicione treinos não solicitados.
 - Ao analisar progresso: foque nos dados fornecidos, seja específico e prático.
 - Respostas concisas. Use markdown (negrito, listas) quando útil.`;
-
-const CREATE_WORKOUT_TOOL: Anthropic.Tool = {
-  name: 'create_workout_day',
-  description: 'Cria ou substitui o treino de um dia específico da semana no app do usuário. Use sempre que o usuário pedir para criar, adicionar ou montar um treino para um dia.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      day_name: {
-        type: 'string',
-        description: 'Nome do dia em português: "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado" ou "Domingo"',
-      },
-      focus: {
-        type: 'string',
-        description: 'Foco do treino (ex: "Peito", "Costas", "Pernas", "Ombro", "Bíceps/Tríceps")',
-      },
-      exercises: {
-        type: 'array',
-        description: 'Lista de exercícios do treino',
-        items: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Nome do exercício em português' },
-            sets: { type: 'number', description: 'Número de séries' },
-            reps: { type: 'string', description: 'Repetições (ex: "8-10", "12", "6-8")' },
-            rest: { type: 'string', description: 'Descanso (ex: "60s", "2min", "1:30")' },
-            notes: { type: 'string', description: 'Observações opcionais' },
-          },
-          required: ['name', 'sets', 'reps', 'rest'],
-        },
-      },
-    },
-    required: ['day_name', 'focus', 'exercises'],
-  },
-};
-
-// As chamadas passam pela Edge Function `anthropic-proxy` do Supabase:
-// a chave real da Anthropic fica em secret no servidor, nunca no navegador.
-async function getClient(): Promise<Anthropic> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('Você precisa estar logado para usar a IA.');
-  return new Anthropic({
-    apiKey: 'proxy', // ignorada — a função injeta a chave real no servidor
-    baseURL: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/anthropic-proxy`,
-    dangerouslyAllowBrowser: true,
-    defaultHeaders: { Authorization: `Bearer ${session.access_token}` },
-  });
-}
 
 export function buildWorkoutContext(
   squad: Squad,
@@ -113,11 +63,9 @@ export async function* sendMessage(
   newMessage: string,
   workoutContext: string
 ): AsyncGenerator<MessageChunk> {
-  const client = await getClient();
-
   const systemInstruction = `${SYSTEM_PROMPT}\n\nContexto atual do usuário:\n${workoutContext}`;
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages = [
     ...history.map(m => ({
       role: m.role === 'user' ? 'user' as const : 'assistant' as const,
       content: m.text,
@@ -125,28 +73,14 @@ export async function* sendMessage(
     { role: 'user', content: newMessage },
   ];
 
-  const stream = client.messages.stream({
-    model: MODEL,
-    max_tokens: 1024,
+  for await (const event of streamWorkoutChat({
     system: systemInstruction,
-    tools: [CREATE_WORKOUT_TOOL],
     messages,
-  });
-
-  for await (const event of stream) {
-    if (
-      event.type === 'content_block_delta' &&
-      event.delta.type === 'text_delta' &&
-      event.delta.text
-    ) {
-      yield event.delta.text;
-    }
-  }
-
-  const finalMsg = await stream.finalMessage();
-  for (const block of finalMsg.content) {
-    if (block.type === 'tool_use' && block.name === 'create_workout_day') {
-      const input = block.input as { day_name: string; focus: string; exercises: WorkoutExercise[] };
+  })) {
+    if (event.type === 'text') {
+      yield event.text;
+    } else if (event.name === 'create_workout_day') {
+      const input = event.input as { day_name: string; focus: string; exercises: WorkoutExercise[] };
       yield {
         __workoutCreated__: true,
         dayName: input.day_name,

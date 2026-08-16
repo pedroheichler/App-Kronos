@@ -4,9 +4,9 @@
 
 https://kronos-app.online/
 
-**Plataforma pessoal de produtividade e saúde**
+**Plataforma pessoal de produtividade, finanças e saúde**
 
-Cinco aplicativos integrados em um só lugar: finanças, treino, dieta, tarefas e um hub central.
+Quatro aplicações integradas em um só lugar: Hub, Finance, Treino (com Dieta e Corpo) e Todolist.
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
@@ -45,16 +45,16 @@ Controle financeiro completo.
 - **Tema claro/escuro** e opção de **esconder saldos**
 - Navegação mobile dedicada com barra inferior
 
-### 🏋️ Treino
-Gestão de treinos individual ou em squad.
+### 🏋️ Treino, Dieta e Corpo
+Gestão de saúde individual ou em squad, reunida em uma única aplicação.
 - Plano semanal com exercícios, séries, repetições e descanso
 - **Squad** com código de convite e ranking de sequência
 - Marcação de séries, cronômetro de descanso e histórico de cargas
 - Contador de **sequência (streak)** com marcos
 - **Chat com IA** que monta e aplica treinos direto no app
 
-### 🍎 Dieta
-Hidratação e alimentação.
+#### 🍎 Dieta
+Hidratação e alimentação dentro do Treino.
 - Meta diária de água com **anel de progresso animado**
 - Registro rápido (copo, garrafa, litro) e histórico dos últimos 7 dias
 - Refeições com calorias, carboidratos e proteína
@@ -75,22 +75,24 @@ Tarefas, hábitos e projetos.
 | Ícones | Lucide |
 | Gráficos | Recharts |
 | Animações | Motion |
-| IA | Claude (Anthropic) |
+| IA | Claude via Supabase Edge Function |
 
 ---
 
 ## 🔐 Segurança
 
-- **Row Level Security (RLS)** em todas as tabelas — cada usuário só acessa os próprios dados
-- A **chave da API da Anthropic nunca chega ao navegador**: as chamadas passam por uma *Edge Function* (`anthropic-proxy`) que guarda a chave como secret no servidor e valida o JWT do usuário
+- **Row Level Security (RLS)** versionada em todas as tabelas, com compartilhamento explícito apenas entre membros do mesmo squad
+- A **chave da API da Anthropic nunca chega ao navegador**: a Edge Function valida JWT, origem e payload, escolhe o modelo no servidor e aplica quota diária por usuário
 - Variáveis de ambiente fora do controle de versão
 - Escape de HTML nas respostas da IA (proteção contra XSS)
+- Uploads limitados a JPG, PNG e WebP de até 5 MB, com policies por usuário/squad
+- Headers CSP, HSTS, anti-clickjacking e `nosniff` no deploy da Hostinger
 
 ---
 
 ## 🚀 Rodando localmente
 
-**Pré-requisitos:** Node.js 18+ e uma conta no Supabase.
+**Pré-requisitos:** Node.js 20.19+ e uma conta no Supabase.
 
 ```bash
 # 1. Clone e instale
@@ -99,7 +101,7 @@ cd App-Kronos
 npm install
 
 # 2. Instale as dependências de cada app
-for app in hub Finance Treino todolist Dieta; do
+for app in hub Finance Treino todolist; do
   npm install --prefix $app
 done
 
@@ -108,7 +110,13 @@ done
 #   VITE_SUPABASE_URL=https://seu-projeto.supabase.co
 #   VITE_SUPABASE_ANON_KEY=sua-chave-anon
 
-# 4. Rode tudo de uma vez
+# 4. Aplique as migrações e configure a Edge Function
+# supabase db push
+# supabase secrets set ANTHROPIC_API_KEY=... \
+#   ALLOWED_ORIGINS=https://seu-dominio.com \
+#   AI_DAILY_REQUEST_LIMIT=60 AI_DAILY_TOKEN_LIMIT=50000
+
+# 5. Rode tudo de uma vez
 npm run dev
 ```
 
@@ -121,8 +129,9 @@ npm run dev
 | `npm run dev:finance` | Só o Finance |
 | `npm run dev:treino` | Só o Treino (porta 3000) |
 | `npm run dev:todo` | Só o Todolist (porta 3003) |
-| `npm run dev:dieta` | Só a Dieta (porta 3004) |
 | `npm run build` | Build de produção de todos |
+| `npm run check` | TypeScript, lint, testes e builds |
+| `npm run security:audit` | Auditoria npm dos cinco lockfiles |
 | `npm run deploy` | Build + monta a pasta `deploy/` pronta pra publicar |
 
 ---
@@ -134,11 +143,13 @@ App-Kronos/
 ├── hub/            → entrada, auth e seletor de apps
 ├── Finance/        → controle financeiro
 ├── Treino/         → treinos e squad
-├── Dieta/          → hidratação e refeições
 ├── todolist/       → tarefas
 ├── supabase/
+│   ├── migrations/            → schema completo, RLS, Storage e quota da IA
 │   └── functions/
-│       └── anthropic-proxy/   → proxy seguro para a API da Anthropic
+│       └── anthropic-proxy/   → proxy validado e limitado da Anthropic
+├── hosting/.htaccess          → headers de segurança da Hostinger
+├── tests/                     → invariantes de segurança
 └── deploy.mjs      → junta os builds em deploy/
 ```
 

@@ -12,7 +12,6 @@ const COLORS = [
   '#ef4444', '#ec4899', '#06b6d4', '#f97316',
 ];
 const DAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
-const MONTH_NAMES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
 function calcStreak(set: Set<string>): number {
   let s = 0;
@@ -297,7 +296,7 @@ function HabitDayRow({ habit, completedDates, daysInMonth, dayKey, today, pct, o
   today: string;
   pct: number;
   onToggle: (id: string, date: string) => void;
-  headerRef: React.RefObject<HTMLDivElement>;
+  headerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
 

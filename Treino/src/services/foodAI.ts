@@ -1,23 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { supabase } from './supabase';
-
-// As chamadas passam pela Edge Function `anthropic-proxy` do Supabase:
-// a chave real da Anthropic fica em secret no servidor, nunca no navegador.
-async function getClient(): Promise<Anthropic> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('Você precisa estar logado para usar a IA.');
-  return new Anthropic({
-    apiKey: 'proxy', // ignorada — a função injeta a chave real no servidor
-    baseURL: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/anthropic-proxy`,
-    dangerouslyAllowBrowser: true,
-    defaultHeaders: { Authorization: `Bearer ${session.access_token}` },
-    maxRetries: 4, // 529/429 são temporários — insiste antes de desistir
-  });
-}
+import { callAI, type AITextBlock } from './anthropicProxy';
 
 // Traduz erros da API em mensagens que fazem sentido pro usuário
-function friendlyError(err: any): Error {
-  const status = err?.status ?? err?.response?.status;
+function friendlyError(err: unknown): Error {
+  const candidate = err as { status?: number; response?: { status?: number }; message?: string; name?: string };
+  const status = candidate?.status ?? candidate?.response?.status;
   if (status === 529 || status === 503) {
     return new Error('A IA está sobrecarregada no momento. Tente de novo em alguns segundos.');
   }
@@ -25,13 +11,16 @@ function friendlyError(err: any): Error {
     return new Error('Muitas requisições seguidas. Aguarde alguns segundos e tente de novo.');
   }
   if (status === 401 || status === 403) {
-    return new Error('Erro de autenticação com a IA. Faça login novamente.');
+    return new Error('Sua sessão expirou. Recarregue a página e entre novamente.');
   }
   if (status === 400) {
     return new Error('Não consegui processar essa imagem. Tente outra foto.');
   }
-  if (err?.message?.includes('fetch') || err?.name === 'APIConnectionError') {
-    return new Error('Sem conexão com o servidor da IA. Verifique sua internet.');
+  if (status === 502) {
+    return new Error('O servidor da IA não respondeu. Tente de novo.');
+  }
+  if (candidate?.message?.includes('fetch') || candidate?.name === 'APIConnectionError') {
+    return new Error('Sem conexão. Verifique sua internet e tente de novo.');
   }
   return err instanceof Error ? err : new Error('Erro inesperado ao analisar a foto.');
 }
@@ -41,6 +30,7 @@ export interface FoodAnalysis {
   calories: number;
   protein: number;
   carbs: number;
+  fat: number;
   confidence: 'alta' | 'média' | 'baixa';
   notes?: string;
 }
@@ -74,17 +64,17 @@ export function compressImage(file: File): Promise<{ base64: string; mediaType: 
 }
 
 const OUTPUT_FORMAT = `Responda APENAS com JSON válido, sem markdown, neste formato exato:
-{"name": "nome curto do alimento/prato em português", "calories": número inteiro (kcal), "protein": número inteiro (gramas), "carbs": número inteiro (gramas), "confidence": "alta" | "média" | "baixa", "notes": "observação curta opcional sobre a estimativa"}`;
+{"name": "nome curto do alimento/prato em português", "calories": número inteiro (kcal), "protein": número inteiro (gramas), "carbs": número inteiro (gramas), "fat": número inteiro (gramas), "confidence": "alta" | "média" | "baixa", "notes": "observação curta opcional sobre a estimativa"}`;
 
 // Envia o conteúdo para a IA e converte a resposta em FoodAnalysis
-async function askAI(content: Anthropic.ContentBlockParam[], fallbackMsg: string): Promise<FoodAnalysis> {
-  const client = await getClient();
+type FoodContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } };
 
-  let response: Anthropic.Message;
+async function askAI(content: FoodContentBlock[], fallbackMsg: string): Promise<FoodAnalysis> {
+  let response;
   try {
-    response = await client.messages.create({
-      model: 'claude-sonnet-5',
-      max_tokens: 500,
+    response = await callAI('food-analysis', {
       messages: [{ role: 'user', content }],
     });
   } catch (err) {
@@ -93,7 +83,7 @@ async function askAI(content: Anthropic.ContentBlockParam[], fallbackMsg: string
   }
 
   const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .filter((b): b is AITextBlock => b.type === 'text')
     .map(b => b.text)
     .join('')
     .trim();
@@ -110,6 +100,7 @@ async function askAI(content: Anthropic.ContentBlockParam[], fallbackMsg: string
     calories: Math.max(0, Math.round(Number(parsed.calories) || 0)),
     protein: Math.max(0, Math.round(Number(parsed.protein) || 0)),
     carbs: Math.max(0, Math.round(Number(parsed.carbs) || 0)),
+    fat: Math.max(0, Math.round(Number(parsed.fat) || 0)),
     confidence: parsed.confidence === 'alta' || parsed.confidence === 'baixa' ? parsed.confidence : 'média',
     notes: parsed.notes ? String(parsed.notes) : undefined,
   };
