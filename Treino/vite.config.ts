@@ -2,10 +2,62 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      // Service worker: o app abre e funciona na academia sem sinal.
+      // As escritas ficam na fila (services/offlineQueue.ts) e sobem depois.
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: ['kronos-icon.png'],
+        manifest: {
+          name: 'Kronos — Treino e Dieta',
+          short_name: 'Kronos',
+          description: 'Treino, dieta e progresso no mesmo lugar.',
+          start_url: '/treino/',
+          scope: '/treino/',
+          display: 'standalone',
+          background_color: '#0B0F1A',
+          theme_color: '#0B0F1A',
+          lang: 'pt-BR',
+          icons: [
+            { src: 'kronos-icon.png', sizes: '192x192', type: 'image/png' },
+            { src: 'kronos-icon.png', sizes: '512x512', type: 'image/png' },
+            { src: 'kronos-icon.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
+          navigateFallback: '/treino/index.html',
+          runtimeCaching: [
+            {
+              // Fontes do Google: cache longo, não muda
+              urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\//,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'fontes',
+                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
+              },
+            },
+            {
+              // Dados do Supabase: sempre tenta a rede primeiro; o cache serve
+              // só para a tela abrir com o último estado conhecido offline.
+              urlPattern: /\/rest\/v1\//,
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'dados',
+                networkTimeoutSeconds: 4,
+                expiration: { maxEntries: 80, maxAgeSeconds: 60 * 60 * 24 },
+              },
+            },
+          ],
+        },
+      }),
+    ],
     base: '/treino/',
     build: {
       rollupOptions: {

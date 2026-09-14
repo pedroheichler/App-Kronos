@@ -19,12 +19,22 @@ import {
   Apple,
   Sun,
   Moon,
+  Play,
+  WifiOff,
+  SkipForward,
 } from 'lucide-react';
 import { AppSwitcher } from './components/AppSwitcher';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, ViewType, TreinoTab, DietaTab, Exercise } from './types';
 import { muscleGroupOf, MUSCLE_COLORS, type MuscleGroup } from './services/muscleGroups';
 import { collectWeekFacts, generateWeeklyReport } from './services/weeklyReport';
+import {
+  enfileirar,
+  sincronizar,
+  observarFila,
+  iniciarSincronizacaoAutomatica,
+  type EstadoFila,
+} from './services/offlineQueue';
 import type { WorkoutExercise } from './services/gemini';
 import type { Session } from '@supabase/supabase-js';
 
@@ -226,12 +236,20 @@ export default function App() {
   const [restTimer, setRestTimer] = useState<{ exerciseId: string; remaining: number; total: number } | null>(null);
   // Cargas por série do dia. Ficam no banco (tabela set_logs) para não sumirem
   // ao trocar de aparelho ou limpar o cache.
-  const [setLoadData, setSetLoadData] = useState<Record<string, Array<{ weight: string; reps: string }>>>({});
+  const [setLoadData, setSetLoadData] = useState<Record<string, Array<{ weight: string; reps: string; rpe: string }>>>({});
   const [prIds, setPrIds] = useState<Set<string>>(new Set());
   // Maior peso já registrado por exercício, vindo do banco
   const [personalRecords, setPersonalRecords] = useState<Record<string, number>>({});
   // Resumo da última sessão de cada exercício (ex: "4×10 · 75 kg")
   const [previousLoads, setPreviousLoads] = useState<Record<string, string>>({});
+  // Modo treino em andamento
+  const [sessao, setSessao] = useState<{ id: string; startedAt: string } | null>(null);
+  const [sessaoDuracao, setSessaoDuracao] = useState(0);
+  const [pulados, setPulados] = useState<Set<string>>(new Set());
+  // Estado da fila offline (mostra o aviso de pendências)
+  const [fila, setFila] = useState<EstadoFila>({
+    pendentes: 0, online: true, sincronizando: false, falhou: false,
+  });
   // Evolução de carga: maior peso por data, agrupado por exercício
   const [evolution, setEvolution] = useState<Record<string, { name: string; points: { date: string; kg: number }[] }>>({});
   const [evolutionPick, setEvolutionPick] = useState<string | null>(null);
@@ -241,6 +259,52 @@ export default function App() {
   const [weekReport, setWeekReport] = useState<string | null>(null);
   const [weekReportLoading, setWeekReportLoading] = useState(false);
   const loadSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Fila offline: observa o estado e sincroniza quando a conexão volta
+  useEffect(() => {
+    const parar = observarFila(setFila);
+    const pararAuto = iniciarSincronizacaoAutomatica();
+    return () => { parar(); pararAuto(); };
+  }, []);
+
+  // Retoma a sessão que ficou aberta (app fechado no meio do treino)
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    supabase
+      .from('workout_sessions')
+      .select('id, started_at')
+      .eq('user_id', session.user.id)
+      .is('ended_at', null)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .then(({ data }) => {
+        if (data?.[0]) setSessao({ id: data[0].id, startedAt: data[0].started_at });
+      });
+  }, [session?.user?.id]);
+
+  // Cronômetro da sessão
+  useEffect(() => {
+    if (!sessao) return;
+    const calcular = () =>
+      setSessaoDuracao(Math.max(0, Math.floor((Date.now() - new Date(sessao.startedAt).getTime()) / 1000)));
+    calcular();
+    const id = setInterval(calcular, 1000);
+    return () => clearInterval(id);
+  }, [sessao]);
+
+  // Exercícios pulados hoje
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    supabase
+      .from('exercise_progress')
+      .select('exercise_id')
+      .eq('user_id', session.user.id)
+      .eq('date', localDateStr())
+      .eq('skipped', true)
+      .then(({ data }) => {
+        if (data) setPulados(new Set(data.map((r: any) => r.exercise_id)));
+      });
+  }, [session?.user?.id]);
+
   // ── Rotas por hash (#/dieta/corpo) ──
   // Hash em vez de caminho: funciona em hospedagem estática sem precisar
   // configurar reescrita no servidor. Resolve o F5 perdendo a aba e o botão
@@ -619,7 +683,7 @@ useEffect(() => {
       const [{ data: logs }, { data: prs }] = await Promise.all([
         supabase
           .from('set_logs')
-          .select('exercise_id, set_index, weight, reps')
+          .select('exercise_id, set_index, weight, reps, rpe')
           .eq('user_id', session.user.id)
           .eq('date', localDateStr())
           .in('exercise_id', exerciseIds),
@@ -627,13 +691,14 @@ useEffect(() => {
       ]);
 
       if (logs) {
-        const byExercise: Record<string, Array<{ weight: string; reps: string }>> = {};
+        const byExercise: Record<string, Array<{ weight: string; reps: string; rpe: string }>> = {};
         for (const row of logs) {
           const arr = byExercise[row.exercise_id] ?? [];
-          while (arr.length <= row.set_index) arr.push({ weight: '', reps: '' });
+          while (arr.length <= row.set_index) arr.push({ weight: '', reps: '', rpe: '' });
           arr[row.set_index] = {
             weight: row.weight != null ? String(row.weight) : '',
             reps: row.reps != null ? String(row.reps) : '',
+            rpe: (row as any).rpe != null ? String((row as any).rpe) : '',
           };
           byExercise[row.exercise_id] = arr;
         }
@@ -854,21 +919,18 @@ useEffect(() => {
 
     const newCompleted = !ex.completed;
 
-    const { error } = await supabase
-      .from('exercise_progress')
-      .upsert({
+    // Passa pela fila: sem internet fica guardado e sobe depois
+    await enfileirar({
+      tipo: 'exercise_progress',
+      chave: `${exerciseId}:${localDateStr()}`,
+      dados: {
         exercise_id: exerciseId,
         user_id: session.user.id,
         completed: newCompleted,
+        skipped: false,
         date: localDateStr(),
-      }, { onConflict: 'exercise_id,user_id,date' });
-
-    // Sem isso a marcação some ao recarregar e o usuário não percebe
-    if (error) {
-      console.error('Erro ao marcar exercício:', error);
-      notify('Não foi possível salvar. Verifique sua conexão.');
-      return;
-    }
+      },
+    });
 
     setSquad(prev => ({
       ...prev,
@@ -924,7 +986,7 @@ useEffect(() => {
     persistSetLog(
       exercise.id,
       setIndex,
-      setLoadData[exercise.id]?.[setIndex] ?? { weight: '', reps: '' },
+      setLoadData[exercise.id]?.[setIndex] ?? { weight: '', reps: '', rpe: '' },
       updated[setIndex]
     );
 
@@ -947,12 +1009,12 @@ useEffect(() => {
     }
   };
 
-  const handleLoadChange = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', val: string) => {
-    let updatedSet = { weight: '', reps: '' };
+  const handleLoadChange = (exerciseId: string, setIndex: number, field: 'weight' | 'reps' | 'rpe', val: string) => {
+    let updatedSet = { weight: '', reps: '', rpe: '' };
 
     setSetLoadData(prev => {
       const sets = prev[exerciseId] ? [...prev[exerciseId]] : [];
-      while (sets.length <= setIndex) sets.push({ weight: '', reps: '' });
+      while (sets.length <= setIndex) sets.push({ weight: '', reps: '', rpe: '' });
       sets[setIndex] = { ...sets[setIndex], [field]: val };
       updatedSet = sets[setIndex];
       return { ...prev, [exerciseId]: sets };
@@ -970,11 +1032,14 @@ useEffect(() => {
   const persistSetLog = async (
     exerciseId: string,
     setIndex: number,
-    values: { weight: string; reps: string },
+    values: { weight: string; reps: string; rpe?: string },
     done?: boolean
   ) => {
     const weight = values.weight.trim() === '' ? null : Number(values.weight.replace(',', '.'));
     const reps = values.reps.trim() === '' ? null : parseInt(values.reps, 10);
+
+    const rpeBruto = values.rpe?.trim();
+    const rpe = !rpeBruto ? null : Math.min(10, Math.max(1, parseInt(rpeBruto, 10)));
 
     const row: Record<string, unknown> = {
       user_id: session.user.id,
@@ -983,18 +1048,87 @@ useEffect(() => {
       set_index: setIndex,
       weight: Number.isFinite(weight as number) ? weight : null,
       reps: Number.isFinite(reps as number) ? reps : null,
+      rpe: Number.isFinite(rpe as number) ? rpe : null,
       updated_at: new Date().toISOString(),
     };
     if (done !== undefined) row.done = done;
 
-    const { error } = await supabase
-      .from('set_logs')
-      .upsert(row, { onConflict: 'user_id,exercise_id,date,set_index' });
+    await enfileirar({
+      tipo: 'set_log',
+      chave: `${exerciseId}:${localDateStr()}:${setIndex}`,
+      dados: row,
+    });
+  };
+
+  // ── Pular exercício ──
+  // Diferente de "não fiz": registra a intenção, some da lista ativa e não
+  // conta como pendente no progresso do dia.
+  const pularExercicio = async (exerciseId: string) => {
+    const jaPulado = pulados.has(exerciseId);
+    setPulados(prev => {
+      const s = new Set(prev);
+      if (jaPulado) s.delete(exerciseId); else s.add(exerciseId);
+      return s;
+    });
+
+    await enfileirar({
+      tipo: 'exercise_progress',
+      chave: `${exerciseId}:${localDateStr()}`,
+      dados: {
+        exercise_id: exerciseId,
+        user_id: session.user.id,
+        completed: false,
+        skipped: !jaPulado,
+        date: localDateStr(),
+      },
+    });
+  };
+
+  // ── Sessão de treino ──
+  const iniciarSessao = async () => {
+    const { data, error } = await supabase
+      .from('workout_sessions')
+      .insert({
+        user_id: session.user.id,
+        workout_day_id: activeDayId || null,
+        date: localDateStr(),
+      })
+      .select('id, started_at')
+      .single();
 
     if (error) {
-      console.error('Erro ao salvar carga da série:', error);
-      notify('Não foi possível salvar a carga.');
+      console.error('Erro ao iniciar a sessão:', error);
+      notify('Não foi possível iniciar o treino.');
+      return;
     }
+    setSessao({ id: data.id, startedAt: data.started_at });
+  };
+
+  const encerrarSessao = async () => {
+    if (!sessao) return;
+    // Garante que nada ficou pendente antes de fechar o treino
+    await sincronizar();
+
+    const { data, error } = await supabase.rpc('finish_workout_session', {
+      p_session_id: sessao.id,
+    });
+
+    if (error) {
+      console.error('Erro ao encerrar a sessão:', error);
+      notify('Não foi possível encerrar o treino.');
+      return;
+    }
+    const volume = Number((data as any)?.total_volume ?? 0);
+    const minutos = Math.max(1, Math.round(sessaoDuracao / 60));
+    setSessao(null);
+    setSessaoDuracao(0);
+    notify(
+      volume > 0
+        ? `Treino encerrado — ${minutos} min · ${volume.toLocaleString('pt-BR')} kg de volume`
+        : `Treino encerrado — ${minutos} min`,
+      'ok'
+    );
+    fetchDiasTreinados();
   };
 
   const addExercise = (dayId: string) => {
@@ -1158,6 +1292,61 @@ useEffect(() => {
 
           {currentView === 'treino' && treinoTab === 'hoje' && !squadLoading && (
             <>
+            {/* Aviso de pendências offline */}
+            {(!fila.online || fila.pendentes > 0) && (
+              <div className="flex items-center gap-2.5 mb-4 px-3.5 py-2.5 rounded-xl border border-[var(--load)] bg-[var(--load-soft)]">
+                <WifiOff size={15} className="text-[var(--load)] shrink-0" />
+                <p className="flex-1 text-[12.5px] text-[var(--load)]">
+                  {!fila.online
+                    ? `Sem conexão — ${fila.pendentes} ${fila.pendentes === 1 ? 'alteração guardada' : 'alterações guardadas'}. Pode treinar normalmente.`
+                    : fila.sincronizando
+                      ? 'Sincronizando o que ficou pendente...'
+                      : `${fila.pendentes} ${fila.pendentes === 1 ? 'alteração pendente' : 'alterações pendentes'}`}
+                </p>
+                {fila.online && !fila.sincronizando && (
+                  <button
+                    onClick={() => sincronizar()}
+                    className="shrink-0 text-[11.5px] font-semibold text-[var(--load)] underline"
+                  >
+                    Enviar agora
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Modo treino em andamento */}
+            <div className="mb-4">
+              {sessao ? (
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--accent-line)] bg-[var(--accent-soft)]">
+                  <span className="w-2 h-2 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
+                      Treino em andamento
+                    </p>
+                    <p className="font-display text-xl font-bold tabular-nums text-[var(--text)] mt-0.5">
+                      {String(Math.floor(sessaoDuracao / 3600)).padStart(2, '0')}:
+                      {String(Math.floor((sessaoDuracao % 3600) / 60)).padStart(2, '0')}:
+                      {String(sessaoDuracao % 60).padStart(2, '0')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={encerrarSessao}
+                    className="shrink-0 px-4 py-2.5 rounded-lg bg-[var(--btn-bg)] text-[var(--btn-fg)] text-[12.5px] font-semibold transition-colors hover:bg-[var(--btn-bg-hover)]"
+                  >
+                    Encerrar
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={iniciarSessao}
+                  disabled={currentDayPlan.exercises.length === 0}
+                  className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-[var(--btn-bg)] text-[var(--btn-fg)] text-sm font-semibold transition-colors hover:bg-[var(--btn-bg-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Play size={16} /> Iniciar treino
+                </button>
+              )}
+            </div>
+
             {/* Sequência + semana */}
             <div className="flex gap-3 mb-4 lg:hidden">
               {(() => {
@@ -1306,6 +1495,8 @@ useEffect(() => {
                         onLoadChange={(setIndex, field, val) => handleLoadChange(ex.id, setIndex, field, val)}
                         isPR={prIds.has(ex.id)}
                         previous={previousLoads[ex.id]}
+                        skipped={pulados.has(ex.id)}
+                        onSkip={() => pularExercicio(ex.id)}
                         showEdit={false}
                       />
                     ))
@@ -2158,16 +2349,20 @@ function formatRestDisplay(rest: string): string {
 }
 
 function ExerciseItem({
-  exercise, setsDone, loadData, onSetToggle, onLoadChange, isPR = false, previous, onEdit, showEdit = true,
+  exercise, setsDone, loadData, onSetToggle, onLoadChange, isPR = false, previous,
+  skipped = false, onSkip, onEdit, showEdit = true,
 }: {
   exercise: Exercise;
   setsDone: boolean[];
-  loadData: Array<{ weight: string; reps: string }>;
+  loadData: Array<{ weight: string; reps: string; rpe?: string }>;
   onSetToggle: (setIndex: number) => void;
-  onLoadChange: (setIndex: number, field: 'weight' | 'reps', val: string) => void;
+  onLoadChange: (setIndex: number, field: 'weight' | 'reps' | 'rpe', val: string) => void;
   isPR?: boolean;
   /** Resumo da última vez que este exercício foi feito (ex: "4×10 · 75 kg") */
   previous?: string;
+  /** Marcado como pulado hoje (equipamento ocupado, dor, falta de tempo) */
+  skipped?: boolean;
+  onSkip?: () => void;
   onEdit?: () => void;
   showEdit?: boolean;
 }) {
@@ -2175,8 +2370,8 @@ function ExerciseItem({
   const doneCount = setsDone.filter(Boolean).length;
   const allDone = doneCount === exercise.sets;
 
-  // Barra de acento à esquerda: verde quando concluído, violeta quando aberto
-  const accent = allDone ? 'var(--accent)' : expanded ? 'var(--accent)' : 'transparent';
+  // Barra de acento à esquerda: acento quando concluído ou aberto
+  const accent = skipped ? 'var(--text-3)' : allDone || expanded ? 'var(--accent)' : 'transparent';
 
   return (
     <motion.div layout
@@ -2184,6 +2379,7 @@ function ExerciseItem({
       style={{
         background: expanded ? 'var(--surface-2)' : 'var(--surface)',
         borderColor: expanded ? 'var(--border-strong)' : 'var(--border)',
+        opacity: skipped ? 0.55 : 1,
       }}>
       <span className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors"
         style={{ background: accent }} />
@@ -2208,7 +2404,7 @@ function ExerciseItem({
         </button>
 
         <button className="flex-1 min-w-0 text-left" onClick={() => setExpanded(v => !v)}>
-          <p className={`text-[15.5px] font-semibold leading-tight ${allDone ? 'text-[var(--text-2)] line-through' : 'text-[var(--text)]'}`}>
+          <p className={`text-[15.5px] font-semibold leading-tight ${allDone || skipped ? 'text-[var(--text-2)] line-through' : 'text-[var(--text)]'}`}>
             {exercise.name}
           </p>
           <p className="text-[12.5px] text-[var(--text-2)] mt-[5px]">
@@ -2216,10 +2412,28 @@ function ExerciseItem({
           </p>
         </button>
 
-        {isPR && (
+        {skipped && (
+          <span className="flex-none rounded-full px-[9px] py-[5px] text-[9.5px] font-bold tracking-[0.06em] bg-[var(--surface-3)] text-[var(--text-2)]">
+            PULADO
+          </span>
+        )}
+
+        {isPR && !skipped && (
           <span className="flex-none rounded-full px-[9px] py-[5px] text-[9.5px] font-bold tracking-[0.06em] bg-[var(--accent-soft)] text-[var(--accent)]">
             🏆 RECORDE
           </span>
+        )}
+
+        {onSkip && (
+          <button
+            onClick={e => { e.stopPropagation(); onSkip(); }}
+            title={skipped ? 'Voltar para a lista' : 'Pular este exercício'}
+            className={`flex-none p-1.5 rounded-lg transition-colors ${
+              skipped ? 'text-[var(--accent)]' : 'text-[var(--text-3)] hover:text-[var(--text-2)]'
+            }`}
+          >
+            <SkipForward size={14} />
+          </button>
         )}
 
         {showEdit && onEdit && (
@@ -2242,15 +2456,17 @@ function ExerciseItem({
             transition={{ duration: 0.18 }}
             className="overflow-hidden">
             <div className="mx-[18px] mb-4 pt-3.5 border-t border-[var(--border)] flex flex-col gap-2">
-              <div className="grid grid-cols-[22px_1fr_1fr_34px] gap-2.5 text-[9.5px] font-semibold tracking-[0.12em] text-[var(--text-3)]">
-                <span>#</span><span>PESO (KG)</span><span>REPS</span><span />
+              <div className="grid grid-cols-[18px_1fr_1fr_46px_34px] gap-2 text-[9.5px] font-semibold tracking-[0.12em] text-[var(--text-3)]">
+                <span>#</span><span>PESO (KG)</span><span>REPS</span>
+                <span title="Esforço percebido: 10 = falha, 8 = sobraram 2 reps">RPE</span>
+                <span />
               </div>
 
               {Array.from({ length: exercise.sets }, (_, i) => {
                 const done = setsDone[i] ?? false;
                 const load = loadData[i] ?? { weight: '', reps: '' };
                 return (
-                  <div key={i} className="grid grid-cols-[22px_1fr_1fr_34px] gap-2.5 items-center">
+                  <div key={i} className="grid grid-cols-[18px_1fr_1fr_46px_34px] gap-2 items-center">
                     <span className="text-xs font-semibold text-[var(--text-2)]">{i + 1}</span>
                     <input
                       type="number" inputMode="decimal" placeholder="—"
@@ -2267,6 +2483,14 @@ function ExerciseItem({
                       onChange={e => onLoadChange(i, 'reps', e.target.value)}
                       onClick={e => e.stopPropagation()}
                       className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2.5 py-[9px] text-[13px] font-semibold tabular-nums text-[var(--text)] outline-none focus:border-[var(--border-strong)] transition-colors"
+                    />
+                    <input
+                      type="number" inputMode="numeric" min="1" max="10" placeholder="—"
+                      value={load.rpe ?? ''}
+                      onChange={e => onLoadChange(i, 'rpe', e.target.value)}
+                      onClick={e => e.stopPropagation()}
+                      title="Esforço percebido de 1 a 10"
+                      className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-1.5 py-[9px] text-[13px] font-semibold tabular-nums text-center text-[var(--load)] outline-none focus:border-[var(--border-strong)] transition-colors"
                     />
                     <button
                       onClick={() => onSetToggle(i)}
