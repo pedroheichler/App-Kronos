@@ -12,7 +12,8 @@
     "build": "npm run build --prefix hub && npm run build --prefix Finance && npm run build --prefix Treino && npm run build --prefix todolist",
     "check": "npm run lint && npm run test && npm run build",
     "security:audit": "npm audit && npm audit --prefix hub && npm audit --prefix Finance && npm audit --prefix Treino && npm audit --prefix todolist",
-    "deploy": "npm run build && node deploy.mjs"
+    "deploy": "npm run build && node deploy.mjs",
+    "deploy:zip": "npm run deploy && powershell -NoProfile -ExecutionPolicy Bypass -File hosting/zip.ps1"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"
