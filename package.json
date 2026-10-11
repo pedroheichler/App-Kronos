@@ -16,6 +16,6 @@
     "deploy:zip": "npm run deploy && powershell -NoProfile -ExecutionPolicy Bypass -File hosting/zip.ps1"
   },
   "devDependencies": {
-    "concurrently": "^9.0.0"
+    "concurrently": "^10.0.6"
   }
 }
